@@ -112,7 +112,7 @@ RUN wget -q https://mirror.ctan.org/systems/texlive/tlnet/install-tl-unx.tar.gz 
     cd / && rm -rf install-tl-* install-tl-unx.tar.gz /tmp/texlive.profile
 
 # update tlmgr, filename db, and LuaTeX font cache
-RUN tlmgr option repository ctan && \
+RUN tlmgr option repository https://mirror.ctan.org/systems/texlive/tlnet && \
     tlmgr update --self --all && \
     mktexlsr && \
     luaotfload-tool -u
