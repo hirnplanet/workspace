@@ -2,34 +2,65 @@
 image: select-land.webp:25:0
 </div>
 
+<div
+    class="autotoc-secondary-trigger"
+    data-title="Auf dieser Seite"
+    data-levels="h2,h3">
+</div>
+
 # Einführung in SQL
 
 <p class='abstract'>
-In diesem Kapitel lernst du, wie du MySQL-Datenbanken abfragen kannst. Dazu verwenden wir die Programmiersprache SQL, die speziell für Datenbanken entwickelt wurde. SQL steht für Structured Query Language und wird ausgesprochen wie »Sequel«.
+In diesem Kapitel lernst du, wie du MySQL-Da­ten­ban­ken abfragen kannst. Dazu verwenden wir SQL, die Structured Query Language. Wir beginnen mit einfachen Abfragen und kombinieren die einzelnen Bausteine anschließend zu eigenen Fragen an die Daten.
 </p>
 
-Stelle zuerst sicher, dass du keinen Ordner geöffnet hast. Um sicherzugehen, drücke einfach den Shortcut für »Ordner schließen«: <span class='key'>Strg</span><span class='key'>K</span> und dann <span class='key'>F</span>. Dein Workspace sollte jetzt ungefähr so aussehen:
+Stelle zuerst sicher, dass du keinen Ordner geöffnet hast. Um sicherzugehen, drücke einfach den Shortcut für »Ordner schließen«: <kbd>Strg</kbd><kbd>K</kbd> und dann <kbd>F</kbd>. Dein Workspace sollte jetzt ungefähr so aussehen:
 
-<img class='full' src='fresh-start.webp'>
+<!-- tutorial-screenshot
+# Workspace ohne geöffneten Ordner
+show-left-sidebar
+-->
 
-Schließe die linken Seitenleiste, indem du <span class='key'>Strg</span><span class='key'>B</span> drückst, um mehr Platz zu haben.
-Öffne als nächstes das Terminal, indem du den Shortcut <span class='key'>Strg</span><span class='key'>J</span> drückst. Dein Workspace sollte jetzt ungefähr so aussehen:
+<img class='full' src='fresh-start.webp' alt=''>
 
-<img class='full' src='got-terminal.webp'>
+Wir erstellen nun ein Verzeichnis für unser MySQL-Experiment. Klicke dazu auf »Open Folder« und gib `mysql-terra` ein:
 
-<img src='terminal-maximize.webp' class='r' style='width: 25em;'>
+<!-- tutorial-screenshot
+press: Control+K
+press: Control+O
+wait-for-input-value: /workspace/
+type: mysql-terra
+crop-bottom: 55%
+-->
 
-Du kannst das Terminal auch maximieren, indem du auf den Pfeil in der rechten oberen Ecke des Terminals klickst. Die linke Seitenleiste kannst du jederzeit mit <span class='key'>Strg</span><span class='key'>B</span> ein- und ausblenden.
+<img class='full' src='open-folder.webp' alt=''>
 
-Im Terminal siehst du nun die Eingabeaufforderung, auch Prompt genannt, der dir u.a. anzeigt, in welchem Verzeichnis du dich befindest. Der Prompt sieht in etwa so aus:
+Da das Verzeichnis noch nicht existiert, wirst du gefragt, ob das Verzeichnis erstellt werden soll. Bestätige die Frage mit <kbd>Enter</kbd>:
 
-```bash
-abc@7a93efd91905:~$
-```
+<!-- tutorial-screenshot
+press: Enter
+wait-for-text: create it
+crop-bottom: 83%
+-->
 
-Lass dich von dem Prompt nicht verwirren. Der Teil `abc` vor dem `@` ist dein Benutzername, der Teil `7a93efd91905` nach dem `@` ist der Name deines Computers, und der Teil nach dem `:` ist das aktuelle Verzeichnis. In diesem Fall ist das aktuelle Verzeichnis `~`, welches die Abkürzung für dein Home-Verzeichnis ist. Das `$` am Ende des Prompts zeigt an, dass du als normaler Benutzer angemeldet bist. Wenn du als Administrator angemeldet wärst, würde das `$` durch ein `#` ersetzt.
+<img class='full' src='open-folder-confirm.webp' alt=''>
 
-## Beispieldaten herunterladen
+Öffne anschließend das Terminal:
+
+<!-- tutorial-screenshot
+press: Enter
+sleep: 1
+click: Next Up
+terminal-open
+-->
+
+<img class='full' src='got-terminal.webp' alt=''>
+
+<img src='../common/maximize-terminal.webp' class='r' style='width: 25em;' alt=''>
+
+Du kannst das Terminal auch maximieren, indem du auf das Symbol in der rechten oberen Ecke des Terminals klickst.
+
+## Beispieldaten laden
 
 Um MySQL kennenzulernen, benötigen wir eine Datenbank. Wir verwenden die Beispieldatenbank `terra1`, die du dir herunterladen kannst, indem du folgenden Befehl eingibst:
 
@@ -39,53 +70,32 @@ wget https://github.com/specht/workspace-files/raw/main/terra1.sql
 
 Die Ausgabe sollte in etwa so aussehen:
 
-<img class='full' src='wget.webp'>
+<!-- tutorial-screenshot
+terminal-maximize
+terminal-run: clear
+terminal-run: wget https://github.com/specht/workspace-files/raw/main/terra1.sql
+terminal-wait-for-prompt
+wait-for-file: mysql-terra/terra1.sql
+sleep: 0.51
+-->
 
-<div class='hint'>
-Lass dich nicht davon stören, dass die Ausgabe so umfangreich ist. Der Grund dafür ist, dass der Webserver die
-Anfrage auf eine andere URL umleitet (»302 Found«) und <code>wget</code> dieser Umleitung folgt. Die eigentliche Datei wird
-dann heruntergeladen (»200 OK«) und die Ausgabe von <code>wget</code> zeigt dir den Fortschritt an.
-</div>
+<img class='full' src='wget.webp' alt=''>
 
-Das Programm `wget` können wir dazu verwenden, um Dateien aus dem Internet herunterzuladen.
-Die Datei wird standardmäßig im aktuellen Verzeichnis gespeichert. Schau nach, ob die Datei
-angekommen ist, indem du den Befehl `ls` (kurz für »list«) eingibst:
+Klicke auf die Datei, um sie zu öffnen. Es befinden sich Daten zu Ländern und Städten darin.
 
-<img class='full' src='ls.webp'>
+<!-- tutorial-screenshot
+open-file: terra1.sql
+press: Control+G
+press: 2
+press: 3
+press: 7
+press: 7
+press: Enter
+press: Control+J
+sleep: 0.5
+-->
 
-Viele Befehle auf der Kommandozeile haben Optionen, die stets hinter dem Befehlsnamen mit einem `-` beginnen.
-Probiere hier den Befehl `ls -l` (für »long«), um dir mehr Details anzeigen zu lassen:
-
-<img class='full' src='ls-l.webp'>
-
-Du siehst nun u.a., wie groß die Datei ist. Nutze den Befehl `ls -lh` (für »long human-readable«),
-um die Größe in einer besser lesbaren Form zu sehen:
-
-<img class='full' src='ls-lh.webp'>
-
-Die Datei ist also 1,6 MB groß.
-
-Um dir den Inhalt der Datei anzeigen zu lassen, kannst du den Befehl `less` verwenden. `less` ist ein Pager, der dir den Inhalt einer Datei seitenweise anzeigt. Um den Inhalt der Datei `terra1.sql` anzuzeigen, gib folgenden Befehl ein:
-
-```bash
-less terra1.sql
-```
-
-<div class='hint'>
-Du musst nicht den vollständigen Dateinamen schreiben. Schreib einfach <code>less te</code> und drücke <span class='key'>Tab</span>, um den Dateinamen automatisch zu <code>terra1.sql</code> vervollständigen zu lassen. Du kannst danach ganz normal weiterschreiben.
-</div>
-
-Du siehst jetzt die ersten Zeilen der Datei:
-
-<img class='full' src='less.webp'>
-
-Nutze die Pfeiltasten <span class='key'>←</span><span class='key'>↑</span><span class='key'>→</span><span class='key'>↓</span> sowie <span class='key'>Bild↑</span><span class='key'>Bild↓</span>, um durch die Datei zu navigieren.
-
-Wenn du etwas nach unten scrollst, siehst du, dass in der Datei zwei Tabellen enthalten sind, die Informationen zu Ländern und Orten enthalten.
-
-Drücke <span class='key'>Q</span>, um `less` zu beenden.
-
-## Beispieldaten importieren
+<img class='full' src='terra1-sql.webp' alt=''>
 
 Um die Beispieldatenbank in MySQL zu importieren, gib einfach den folgenden Befehl ein:
 
@@ -93,15 +103,22 @@ Um die Beispieldatenbank in MySQL zu importieren, gib einfach den folgenden Befe
 mysql < terra1.sql
 ```
 
-<div class='hint wink'>
-Hast du daran gedacht, die <span class='key'>Tab</span>-Taste zu verwenden, um den Dateinamen automatisch vervollständigen zu lassen?
-</div>
+Der Import geht relativ schnell und wenn alles geklappt hat, solltest du keine Ausgabe sehen:
 
-Wenn alles geklappt hat, siehst du keine Ausgabe. Das ist ein gutes Zeichen, denn das bedeutet, dass der Import erfolgreich war:
+<!-- tutorial-screenshot
+press: Control+B
+press: Control+J
+terminal-maximize
+terminal-run: clear
+terminal-run: mysql < terra1.sql
+terminal-wait-for-prompt
+sleep: 0.5
+crop-terminal-lines: auto
+-->
 
-<img class='full' src='import.webp'>
+<img class='full' src='sql-import.webp' alt=''>
 
-## Tabellenaufbau anzeigen
+## Die Datenbank erkunden
 
 Um mit MySQL zu arbeiten, verwenden wir `mycli`, einen MySQL-Client, der speziell für die Kommandozeile entwickelt wurde. Starte `mycli`, indem du den folgenden Befehl eingibst:
 
@@ -111,122 +128,342 @@ mycli
 
 Die Ausgabe sollte in etwa so aussehen:
 
-<img class='full' src='mycli-prompt.webp'>
+<!-- tutorial-screenshot
+terminal-run: clear
+terminal-run: mycli
+sleep: 0.5
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
 
-Um dir die Tabellen in der Datenbank anzeigen zu lassen, gib den Befehl `SHOW TABLES;` ein und drücke <span class='key'>Enter</span>:
+<img class='full' src='mycli-prompt.webp' alt=''>
 
-<img class='full' src='show-tables.webp'>
+Um dir die Tabellen in der Datenbank anzeigen zu lassen, gib den Befehl `SHOW TABLES;` ein und drücke <kbd>Enter</kbd>:
+
+<!-- tutorial-screenshot
+press: Control+L
+type: SHOW TABLES;
+press: Enter
+sleep: 0.5
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
+
+<img class='full' src='show-tables.webp' alt=''>
+
+Du siehst die beiden Tabellen `land` und `ort`.
 
 <div class='hint'>
-Die Groß- und Kleinschreibung spielt bei SQL-Befehlen keine Rolle. In diesem Artikel schreiben wir die Befehle in Großbuchstaben, um sie hervorzuheben. Du kannst sie aber auch in Kleinbuchstaben schreiben.
+SQL-Befehle schreiben wir in diesem Tutorial zur besseren Les­bar­keit in Großbuchstaben. Für MySQL spielt die Groß- und Kleinschreibung der hier ver­wen­deten SQL-Schlüsselwörter keine Rolle.
 </div>
 
-Du siehst nun die beiden Tabellen `land` und `ort`. Um dir den Aufbau einer Tabelle anzeigen zu lassen, kannst du den Befehl `DESCRIBE` verwenden. Gib z. B. den Befehl `DESCRIBE land;` ein, um dir den Aufbau der Tabelle `land` anzeigen zu lassen:
+Mit `DESCRIBE` kannst du untersuchen, welche Spalten eine Tabelle besitzt:
 
-<img class='full' src='describe-land.webp'>
+```sql
+DESCRIBE land;
+```
 
-Du siehst nun die Spalten der Tabelle `land` und deren Datentypen.
+<!-- tutorial-screenshot
+press: Control+L
+type: DESCRIBE land;
+press: Enter
+sleep: 0.5
+terminal-scroll-back: 2
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
+
+<img class='full' src='describe-land.webp' alt='Die Tabelle land enthält Spalten für Kürzel, Name, Einwohnerzahl, Fläche, Hauptstadt und Kontinent mit ihren Datentypen.'>
+
+Jede Spalte hat einen Namen und einen Datentyp. So erkennst du, welche Informationen in der Tabelle gespeichert werden.
 
 <div class='hint task'>
-Untersuche die Tabelle <code>ort</code> &ndash; welche Spalten gibt es und welche Datentypen haben sie?
+Untersuche auch die Tabelle <code>ort</code> &ndash; welche Spalten gibt es und welche Datentypen haben sie?
 </div>
 
-## Daten anzeigen
+## Daten mit SELECT anzeigen
 
-Um dir die Daten in einer Tabelle anzeigen zu lassen, kannst du den Befehl `SELECT` verwenden. Gib z. B. den Befehl `SELECT * FROM land;` ein, um dir alle Daten in der Tabelle `land` anzeigen zu lassen:
+Mit `SELECT` fragst du Daten aus einer Tabelle ab. Ein Stern `*` steht dabei für alle Spalten:
 
-<img class='full' src='select-land.webp'>
+```sql
+SELECT * FROM land;
+```
 
-Du siehst nun alle Einträge in der Tabelle `land`. Eine Zeile entspricht einem Land in der Tabelle. Nutze die Pfeiltasten <span class='key'>←</span><span class='key'>↑</span><span class='key'>→</span><span class='key'>↓</span> sowie <span class='key'>Bild↑</span><span class='key'>Bild↓</span>, um durch die Tabelle zu navigieren.
+<!-- tutorial-screenshot
+press: Control+L
+type: SELECT * FROM land;
+press: Enter
+sleep: 0.5
+-->
+
+<img class='full' src='select-land.webp' alt='Das Abfrageergebnis listet alle Länder mit ihren gespeicherten Daten auf.'>
+
+Du siehst nun alle Einträge in der Tabelle `land`. Eine Zeile entspricht einem Land in der Tabelle. Nutze die Pfeiltasten <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd> sowie <kbd>Bild↑</kbd><kbd>Bild↓</kbd>, um durch die Ausgabe zu navigieren.
 
 <div class='hint'>
-Drücke <span class='key'>Q</span> (genau wie vorhin bei <code>less</code>), um zur Eingabeaufforderung von <code>mycli</code> zurückzukehren.
+Bei langen Ergebnissen zeigt <code>mycli</code> die Ausgabe seitenweise an. Drücke <kbd>Q</kbd>, um zur SQL-Eingabe zurückzukehren.
 </div>
 
-Der Befehl `SELECT *` bedeutet, dass alle Spalten ausgewählt werden sollen. Wenn du nur bestimmte Spalten anzeigen möchtest, kannst du diese explizit angeben. Gib z. B. den Befehl `SELECT name, hauptstadt FROM land;` ein, um dir nur die Spalten `name` und `hauptstadt` anzeigen zu lassen:
+Meistens brauchst du nicht alle Spalten. Schreibe die gewünschten Spaltennamen hinter `SELECT`, zum Beispiel:
 
-<img class='full' src='select-land-columns.webp'>
+```sql
+SELECT name, hauptstadt FROM land;
+```
 
-## Zeilen filtern
+<!-- tutorial-screenshot
+press: Q
+press: Control+L
+type: SELECT name, hauptstadt FROM land;
+press: Enter
+sleep: 0.5
+-->
 
-Um nur bestimmte Zeilen anzuzeigen, kannst du den Befehl `WHERE` verwenden. Gib z. B. den Befehl `SELECT * FROM land WHERE name = 'Deutschland';` ein, um dir nur das Land Deutschland anzeigen zu lassen:
+<img class='full' src='select-land-columns.webp' alt='Das Abfrageergebnis enthält nur die Namen der Länder und ihrer Hauptstädte.'>
 
-<img class='full' src='select-land-where.webp'>
+## Zeilen mit WHERE filtern
 
-<div class='hint'>
-Statt der einfachen Anführungszeichen <code>'</code> kannst du auch doppelte Anführungszeichen <code>"</code> verwenden. Das ist besonders nützlich, wenn du Anführungszeichen in deinem Text hast, nach dem du filtern möchtest. Wichtig ist nur,
-dass du am Anfang und am Ende dieselben Anführungszeichen verwendest.
-</div>
+Mit `WHERE` wählst du nur die Zeilen aus, die eine Bedingung erfüllen:
+
+```sql
+SELECT * FROM land WHERE name = 'Deutschland';
+```
+
+<!-- tutorial-screenshot
+press: Q
+press: Control+L
+type: SELECT * FROM land WHERE name = 'Deutschland';
+press: Enter
+sleep: 0.5
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
+
+<img class='full' src='select-land-where.webp' alt='Die gefilterte Tabelle enthält nur den Datensatz für Deutschland.'>
+
+Texte stehen in SQL in einfachen Anführungszeichen, zum Beispiel `'Deutschland'`.
 
 <div class='hint task'>
 Wie viele Einwohner hat Griechenland? Welche Zahl erhältst du und wie ist sie zu interpretieren?
 </div>
 
-Du kannst auch mehrere Bedingungen kombinieren. Gib z. B. den Befehl `SELECT * FROM land WHERE einwohner < 5 AND flaeche > 1000000;` ein, um dir alle Länder anzeigen zu lassen, die weniger als 5 Millionen Einwohner haben und eine Fläche von mehr als 1 Million Quadratkilometern:
+Bedingungen lassen sich kombinieren. Mit `AND` müssen beide Bedingungen erfüllt sein:
 
-<img class='full' src='select-land-where-and.webp'>
+```sql
+SELECT * FROM land
+WHERE einwohner < 5 AND flaeche > 1000000;
+```
 
-Wir sehen also nun die beiden Länder mit der niedrigsten Bevölkerungsdichte, die mindestens 1 Mio. km<sup>2</sup> groß sind.
+<!-- tutorial-screenshot
+press: Control+L
+type: SELECT * FROM land WHERE einwohner < 5 AND flaeche > 1000000;
+press: Enter
+sleep: 0.5
+press: Q
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
 
-## Zeilen sortieren
+<img class='full' src='select-land-where-and.webp' alt='Die kombinierte Bedingung liefert zwei sehr große Länder mit weniger als fünf Millionen Einwohnern.'>
 
-Um die Zeilen in einer Tabelle zu sortieren, kannst du den Befehl `ORDER BY` verwenden. Gib z. B. den Befehl `SELECT * FROM land ORDER BY einwohner;` ein, um dir die Länder nach ihrer Einwohnerzahl sortiert anzeigen zu lassen:
+Das Ergebnis enthält genau die Länder, die beide Bedingungen erfüllen. Mit OR genügt dagegen eine der Bedingungen, zum Beispiel:
 
-<img class='full' src='select-land-order-by.webp'>
+```sql
+SELECT name FROM land
+WHERE kontinent = 'Europa' OR kontinent = 'Asien';
+```
 
-Du siehst nun die Länder nach ihrer Einwohnerzahl sortiert. Standardmäßig wird aufsteigend sortiert. Um absteigend zu sortieren, füge das Schlüsselwort `DESC` (für »descending«) hinzu. Gib z. B. den Befehl `SELECT * FROM land ORDER BY einwohner DESC;` ein, um die Länder nach ihrer Einwohnerzahl absteigend sortiert anzeigen zu lassen:
+<!-- tutorial-screenshot
+press: Control+L
+type: SELECT * FROM land WHERE kontinent = 'Europa' OR kontinent = 'Asien';
+press: Enter
+sleep: 0.5
+-->
 
-<img class='full' src='select-land-order-by-desc.webp'>
+<img class='full' src='select-land-where-or.webp' alt='Die kombinierte Bedingung liefert zwei sehr große Länder mit weniger als fünf Millionen Einwohnern.'>
 
-## Ausgabe begrenzen
 
-Um die Anzahl der Zeilen zu begrenzen, die angezeigt werden, kannst du den Befehl `LIMIT` verwenden. Gib z. B. den Befehl `SELECT * FROM land LIMIT 5;` ein, um dir nur die ersten 5 Länder anzeigen zu lassen:
+## Zeilen mit ORDER BY sortieren
 
-<img class='full' src='select-land-limit.webp'>
+Mit `ORDER BY` sortierst du ein Abfrageergebnis. Ohne weitere Angabe wird aufsteigend sortiert:
+
+```sql
+SELECT * FROM land ORDER BY einwohner;
+```
+
+<!-- tutorial-screenshot
+press: Q
+press: Control+L
+type: SELECT * FROM land ORDER BY einwohner;
+press: Enter
+sleep: 0.5
+-->
+
+<img class='full' src='select-land-order-by.webp' alt='Die Länder sind nach Einwohnerzahl aufsteigend sortiert.'>
+
+Für eine absteigende Sortierung ergänzt du DESC:
+
+```sql
+SELECT * FROM land ORDER BY einwohner DESC;
+```
+
+<!-- tutorial-screenshot
+press: Q
+press: Control+L
+type: SELECT * FROM land ORDER BY einwohner DESC;
+press: Enter
+sleep: 0.5
+-->
+
+<img class='full' src='select-land-order-by-desc.webp' alt='Die Länder sind nach Einwohnerzahl absteigend sortiert.'>
+
+## Ausgabe mit LIMIT begrenzen
+
+Mit `LIMIT` begrenzt du die Anzahl der ausgegebenen Zeilen:
+
+```sql
+SELECT * FROM land LIMIT 5;
+```
+
+<!-- tutorial-screenshot
+press: Q
+press: Control+L
+type: SELECT * FROM land LIMIT 5;
+press: Enter
+sleep: 0.5
+press: Q
+terminal-scroll-back: 1
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
+
+<img class='full' src='select-land-limit.webp' alt='Das begrenzte Abfrageergebnis enthält die ersten fünf Länder.'>
+
+`ORDER BY` und `LIMIT` lassen sich gut kombinieren. Damit kannst du zum Beispiel nach einer Spalte sortieren und anschließend nur die ersten zehn Treffer ausgeben.
+
+## Zeilen mit COUNT zählen
+
+`COUNT(*)` zählt, wie viele Zeilen ein Abfrageergebnis enthält:
+
+```sql
+SELECT COUNT(*) FROM land;
+```
+
+<!-- tutorial-screenshot
+press: Control+L
+terminal-run: SELECT COUNT(*) FROM land;
+sleep: 0.5
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
+
+<img class='full' src='select-count.webp' alt='COUNT zählt die Zeilen der Tabelle land.'>
+
+Auch `COUNT` kannst du mit `WHERE` kombinieren. So lässt sich zum Beispiel zählen, wie viele Datensätze eine bestimmte Bedingung erfüllen:
+
+```sql
+SELECT COUNT(*) FROM land WHERE kontinent = 'Asien';
+```
+
+<!-- tutorial-screenshot
+press: Control+L
+terminal-run: SELECT COUNT(*) FROM land WHERE kontinent = 'Asien';
+sleep: 0.5
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
+
+<img class='full' src='select-count-where.webp' alt='COUNT zählt die Zeilen der Tabelle land.'>
+
+## Text mit LIKE durchsuchen
+
+Mit `LIKE` kannst du Text nach einem Muster durchsuchen. Das Prozentzeichen `%` steht dabei für beliebig viele Zeichen. Die folgende Abfrage findet Ländernamen, in denen `land` vorkommt:
+
+```sql
+SELECT name FROM land
+WHERE name LIKE '%land%'
+ORDER BY name;
+```
+
+<!-- tutorial-screenshot
+press: Control+L
+terminal-run: SELECT name FROM land WHERE name LIKE '%land%' ORDER BY name;
+sleep: 0.5
+-->
+
+<img class='full' src='select-like.webp' alt='LIKE findet Ländernamen, in denen die Zeichenfolge land vorkommt.'>
+
+`'land%'` würde dagegen nur Namen finden, die mit `land` beginnen, und `'%land'` nur Namen, die damit enden.
+
+## Unterschiedliche Werte mit DISTINCT anzeigen
+
+Wenn du nur sehen möchtest, welche **verschiedenen** Werte in einer Spalte vorkommen, verwendest du `DISTINCT`:
+
+```sql
+SELECT DISTINCT kontinent FROM land
+ORDER BY kontinent;
+```
+
+<!-- tutorial-screenshot
+press: Q
+press: Control+L
+terminal-run: SELECT DISTINCT kontinent FROM land ORDER BY kontinent;
+sleep: 0.5
+terminal-scroll-back: 2
+crop-terminal-lines: auto
+crop-terminal-skip-bottom: 1
+-->
+
+<img class='full' src='select-distinct.webp' alt='DISTINCT zeigt jeden unterschiedlichen Wert der Spalte Kontinent nur einmal.'>
+
+Dabei fällt etwas auf: In den Beispieldaten kommen sowohl `Europa` als auch `Europe` vor. Eine Datenbank speichert die Werte so, wie sie eingetragen wurden; uneinheitliche Daten verschwinden also nicht von selbst. Solche Auffälligkeiten lassen sich mit Abfragen entdecken.
 
 ## Zusammenfassung
 
-Du hast jetzt die einzelnen Bestandteile einer SQL-Abfrage kennengelernt:
+Du kennst jetzt die wichtigsten Bausteine, die wir für die folgenden Aufgaben benötigen:
 
 <div style='max-width: 100%; overflow-x: auto;'>
 <table class='table'>
 <thead>
-<tr><th>Befehl</th><th>Bedeutung</th></tr>
+<tr><th>Baustein</th><th>Bedeutung</th></tr>
 </thead>
 <tbody>
-<tr><td><code>SELECT</code></td><td>Was / Welche Spalten sollen angezeigt werden?</td></tr>
-<tr><td><code>FROM</code></td><td>Woher / Aus welcher Tabelle sollen die Daten kommen?</td></tr>
-<tr><td><code>WHERE</code></td><td>Filter / Welche Zeilen sollen angezeigt werden?</td></tr>
-<tr><td><code>ORDER&nbsp;BY</code></td><td>Sortierung / In welcher Reihenfolge sollen die Zeilen angezeigt werden?</td></tr>
-<tr><td><code>LIMIT</code></td><td>Anzahl / Wie viele Zeilen sollen angezeigt werden?</td></tr>
+<tr><td><code>SELECT</code></td><td>Welche Spalten oder berechneten Werte sollen ausgegeben werden?</td></tr>
+<tr><td><code>FROM</code></td><td>Aus welcher Tabelle kommen die Daten?</td></tr>
+<tr><td><code>WHERE</code></td><td>Welche Zeilen erfüllen die Bedingung?</td></tr>
+<tr><td><code>AND</code> / <code>OR</code></td><td>Wie werden mehrere Bedingungen verknüpft?</td></tr>
+<tr><td><code>ORDER&nbsp;BY</code></td><td>In welcher Reihenfolge werden die Zeilen ausgegeben?</td></tr>
+<tr><td><code>LIMIT</code></td><td>Wie viele Zeilen werden höchstens ausgegeben?</td></tr>
+<tr><td><code>COUNT(*)</code></td><td>Wie viele Zeilen enthält das Ergebnis?</td></tr>
+<tr><td><code>LIKE</code></td><td>Welche Texte passen zu einem Muster?</td></tr>
+<tr><td><code>DISTINCT</code></td><td>Welche unterschiedlichen Werte kommen vor?</td></tr>
 </tbody>
 </table>
 </div>
 
-Du kannst diese Befehle kombinieren, um genau die Daten zu erhalten, die du benötigst.
+Die Bausteine lassen sich kombinieren. Eine typische Abfrage kann beispielsweise filtern, sortieren und die Ausgabe anschließend begrenzen.
 
 <div class='hint'>
-Um <code>mycli</code> zu beenden, gib einfach den Befehl <code>exit</code> ein oder verwende die Tastenkombination <span class='key'>Strg</span><span class='key'>D</span>.
+Um <code>mycli</code> zu beenden, gib <code>exit</code> ein oder verwende <kbd>Strg</kbd><kbd>D</kbd>.
 </div>
 
-### Aufgaben
+## Aufgaben
 
-Beantworte die folgenden Fragen, indem du eine geeignete SQL-Abfrage formulierst. Notiere jeweils die Abfrage und dein Ergebnis. Formuliere die Abfrage möglichst so, dass du nur die benötigten Spalten erhältst.
+Beantworte die folgenden Fragen mit geeigneten SQL-Abfragen. Notiere jeweils deine Abfrage und das Ergebnis. Gib möglichst nur die Spalten aus, die du für die Antwort tatsächlich brauchst.
 
-1. Gib eine Tabelle aller Länder aus. Dabei sollen Name, Einwohner und die Hauptstadt angezeigt werden und die Tabelle soll nach der Einwohnerzahl absteigend sortiert sein.
+1. Gib alle Länder mit Name, Einwohnerzahl und Hauptstadt aus. Sortiere die Tabelle nach der Einwohnerzahl absteigend.
 
-2. Wie viele Länder gibt es in der Tabelle `land`?<br>_Hinweis: Du kannst bei <code>SELECT</code> statt Spaltennamen auch Funktionen verwenden, z. B. <code>SELECT COUNT(Name) ...</code> statt <code>SELECT Name ...</code>_.
+2. Wie viele Länder gibt es in der Tabelle `land`?
 
-3. Wie viele Länder liegen in Europa?
+3. Wie viele Länder liegen in Europa? Beachte die beiden unterschiedlichen Schreibweisen, die du mit `DISTINCT` entdeckt hast.
 
-4. Welche Länder haben das Wort »arm« oder »bein« im Namen?<br>_Hinweis: Du kannst nicht nur nach exakten Begriffen suchen, sondern auch nach Teilen von Begriffen, z. B. <code>WHERE Name LIKE '%land%'</code>, wenn du nach allen Ländern suchen möchtest, die den Begriff »land« im Namen haben._
+4. Welche Länder haben die Zeichenfolge `arm` oder `bein` im Namen?
 
-5. Welcher Ort hat die meisten Einwohner, wie viele Einwohner sind es und in welchem Land liegt dieser Ort?
+5. Welcher Ort hat die meisten Einwohner, wie viele Einwohner hat er und in welchem Land liegt er?
 
-6. Wie viele Orte gibt es in Frankreich?<br>_Hinweis: Es gibt natürlich mehr Orte in Frankreich, als in dieser Tabelle stehen, aber wir wollen diese Frage in Bezug auf die uns zur Verfügung stehenden Daten beantworten._
+6. Wie viele Orte aus Frankreich sind in der Tabelle `ort` gespeichert?
 
-7. Gib die 10 bevölkerungsreichsten Orte in Frankreich aus.
+7. Gib die zehn bevölkerungsreichsten Orte Frankreichs aus.
 
-8. Gib jeweils drei Orte an, die den Begriff »arm« oder »bein« im Namen haben.
+8. Finde jeweils drei Orte, deren Name die Zeichenfolge `arm` beziehungsweise `bein` enthält.
 
 9. Welche Orte in Deutschland liegen westlich von Aachen (6,046° Ost)?

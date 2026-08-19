@@ -1,0 +1,20 @@
+{
+  "extension.displayName": "Hackschule Checkpoints",
+  "extension.description": "Einfache lokale Projekt-Checkpoints erstellen, vergleichen und wiederherstellen, ohne den normalen Git-Verlauf zu verändern.",
+  "command.category": "Hackschule Checkpoints",
+  "command.create": "Checkpoint erstellen",
+  "command.restore": "Checkpoint zum Wiederherstellen auswählen",
+  "command.restoreItem": "Diesen Checkpoint wiederherstellen",
+  "command.compareItem": "Mit dem aktuellen Projekt vergleichen",
+  "command.refresh": "Checkpoints aktualisieren",
+  "view.containerTitle": "Checkpoints",
+  "view.name": "Checkpoints",
+  "view.contextualTitle": "Hackschule Checkpoints",
+  "view.welcome": "Du hast noch keine Checkpoints erstellt. Klicke auf das Plus-Symbol in der oberen rechten Ecke, um einen neuen Checkpoint zu erstellen.",
+  "configuration.title": "Hackschule Checkpoints",
+  "configuration.showStatusBar": "Zeigt die Checkpoint-Schaltfläche in der Statusleiste an.",
+  "command.deleteAll": "Alle Checkpoints löschen…",
+  "configuration.warnAddedBytes": "Warnt, wenn ein neuer Checkpoint mindestens diese Anzahl an hinzugefügten oder veränderten Bytes enthält. Setze den Wert auf 0, um diesen Grenzwert zu deaktivieren.",
+  "configuration.warnChangedFiles": "Warnt, wenn ein neuer Checkpoint mindestens diese Anzahl an Dateien verändert. Setze den Wert auf 0, um diesen Grenzwert zu deaktivieren.",
+  "configuration.warnSingleFileBytes": "Warnt, wenn eine einzelne hinzugefügte oder veränderte Datei mindestens diese Größe erreicht. Setze den Wert auf 0, um diesen Grenzwert zu deaktivieren."
+}

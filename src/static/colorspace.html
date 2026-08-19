@@ -1,0 +1,2688 @@
+<link rel="stylesheet" href="include/knob.css">
+<script src="include/knob.js"></script>
+<script src="include/flowsvg.js"></script>
+<link rel="stylesheet" href="include/katex/katex.min.css">
+<script defer src="include/katex/katex.min.js"></script>
+<script defer src="include/katex/auto-render.min.js" onload="renderMathInElement(document.body);"></script>
+<script src="/include/lz-string.min.js"></script>
+
+<style>
+    body {
+        background-color: #1c1d21;
+        overflow: hidden;
+    }
+
+    .menu, .header, footer {
+        display: none;
+    }
+
+    :root {
+        --side-panel-width: 256px;
+        --side-panel-offset: 0px;
+    }
+
+    #app_shell {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        transform: translateX(var(--side-panel-offset));
+        transition: transform 220ms ease;
+    }
+
+    #backdrop {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 10;
+        background-color: rgba(0, 0, 0, 0.5);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 220ms ease;
+    }
+
+    #backdrop.visible {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    #left_panel {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: var(--side-panel-width);
+        height: 100vh;
+        background: #0f1013;
+        border-right: 1px solid #2a2d33;
+        box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35);
+        color: white;
+        z-index: 20;
+        transform: translateX(-100%);
+        transition: transform 220ms ease;
+        display: flex;
+        flex-direction: column;
+        overflow: auto;
+    }
+
+    #left_panel.open {
+        transform: translateX(0);
+    }
+
+    .left-panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 16px;
+        border-bottom: 1px solid #2a2d33;
+        font: 600 14px sans-serif;
+    }
+
+    .left-panel-body {
+        padding: 16px;
+        font: 13px sans-serif;
+    }
+
+    .left-panel-close,
+    .left-panel-open {
+        --bs-btn-bg: #111;
+        --bs-btn-border-color: #2a2d33;
+    }
+
+    .left-panel-open {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 25;
+    }
+
+    .canvas_container {
+        position: absolute;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .canvas_container canvas {
+        display: block;
+        touch-action: none;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: 100%;
+    }
+
+    .channel_container {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        transform: scale(min(1.0, calc(100vh / 1060px)));
+    }
+
+    .channel-panel {
+        background: #111;
+        border-radius: 8px;
+        padding: 16px 8px 8px 8px;
+    }
+
+    .input-pair {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 4px;
+        margin-bottom: 4px;
+    }
+
+    .input-pair p {
+        width: 80px;
+        text-align: center;
+        position: relative;
+        top: 0.4em;
+    }
+
+    .input-pair input[type="text"] {
+        width: 80px;
+        text-align: center;
+    }
+
+    .canvas-label {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        color: white;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 4px 8px;
+        border-radius: 6px;
+        font: 11px sans-serif;
+        line-height: 1.2;
+        pointer-events: none;
+        z-index: 2;
+        white-space: nowrap;
+        bottom: 2px;
+        backdrop-filter: blur(10px);
+        user-select: none;
+    }
+
+    #bg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: -1;
+        pointer-events: none;
+    }
+
+    .permission {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        color: #eee;
+        font: 11px sans-serif;
+        z-index: 100;
+        opacity: 0.75;
+    }
+
+    #gallery {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    #gallery img {
+        width: 100%;
+        border-radius: 6px;
+        cursor: pointer;
+        border: 2px solid transparent;
+    }
+
+    #gallery img:hover {
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+    }
+
+    #math_forward {
+        position: absolute;
+        left: 1em;
+        top: 2em;
+        color: #eee;
+        transform: scale(0.8);
+    }
+
+    #math_inverse {
+        position: absolute;
+        right: 1em;
+        top: 2em;
+        color: #eee;
+        transform: scale(0.8);
+    }
+
+    a {
+        color: #55beed;
+    }
+
+    #calc_strip {
+        position: absolute;
+        left: 0;
+        width: 100%;
+        z-index: 35;
+        pointer-events: none;
+        color: #eee;
+        font: 12px/1.25 sans-serif;
+    }
+
+    .calc_col {
+        position: absolute;
+        white-space: normal;
+        font-variant-numeric: tabular-nums;
+        overflow: hidden;
+    }
+
+    .calc_title {
+        font-weight: 700;
+        color: #fff;
+        margin-bottom: 4px;
+    }
+
+    .calc_eq {
+        margin-bottom: 4px;
+    }
+
+    .calc_dim {
+        color: #aaa;
+    }
+
+    .calc_arrow {
+        color: #8dd3ff;
+        font-weight: 700;
+    }
+
+    .calc_swatch {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        border: 1px solid rgba(255,255,255,0.25);
+        margin-right: 6px;
+        vertical-align: -1px;
+    }
+
+    .calc_mono {
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.01em;
+    }
+
+    .calc_r { color: #ff6b6b; }
+    .calc_g { color: #6bff95; }
+    .calc_b { color: #6bbcff; }
+    .calc_bias { color: #f2c879; }
+    .calc_dim_val { color: #bbb; }
+</style>
+
+<div id="backdrop"></div>
+
+<div id="left_panel" aria-hidden="true">
+    <div class="left-panel-body" id="left_panel_body">
+        <button id='bu_reset_pipeline' class="btn btn-sm btn-success mb-2"><i class='bi bi-arrow-counterclockwise'></i>Reset knobs</button>
+        <div id="gallery"></div>
+    </div>
+</div>
+
+<button class="btn btn-sm btn-secondary left-panel-open" id="left_panel_open_btn"><i class='bi bi-list'></i>Menu</button>
+
+<div id="app_shell">
+    <div class='permission'>
+        Alle Bilder mit freundlicher Genehmigung von Ian Kobylanski · <a href='https://koby.photography/' target='_blank'>https://koby.photography/</a>
+    </div>
+    <div id="bg">
+    </div>
+    <div class="container-fluid">
+        <div class="col-md-12">
+            <div id="math_forward"></div>
+            <div id="math_inverse"></div>
+            <img id="base_image" style="display: none;">
+
+            <div class="channel_container" id="channel0"></div>
+            <div class="channel_container" id="channel1"></div>
+            <div class="channel_container" id="channel2"></div>
+
+            <div class="canvas_container" id="source"><canvas></canvas></div>
+
+            <div class="canvas_container" id="c1">
+                <canvas></canvas>
+                <div class="canvas-label energy-label"></div>
+            </div>
+
+            <div class="canvas_container" id="c2">
+                <canvas></canvas>
+                <div class="canvas-label energy-label"></div>
+            </div>
+
+            <div class="canvas_container" id="c3">
+                <canvas></canvas>
+                <div class="canvas-label energy-label"></div>
+            </div>
+
+            <div class="channel_container" id="channel0m"></div>
+            <div class="channel_container" id="channel1m"></div>
+            <div class="channel_container" id="channel2m"></div>
+
+            <div class="canvas_container" id="c1m">
+                <canvas></canvas>
+                <div class="canvas-label energy-label"></div>
+            </div>
+
+            <div class="canvas_container" id="c2m">
+                <canvas></canvas>
+                <div class="canvas-label energy-label"></div>
+            </div>
+
+            <div class="canvas_container" id="c3m">
+                <canvas></canvas>
+                <div class="canvas-label energy-label"></div>
+            </div>
+
+            <div class="channel_container" id="channel0n"></div>
+            <div class="channel_container" id="channel1n"></div>
+            <div class="channel_container" id="channel2n"></div>
+
+            <div class="canvas_container" id="result">
+                <canvas></canvas>
+                <div class="canvas-label similarity-label"></div>
+            </div>
+        </div>
+    </div>
+    <div id="calc_strip">
+        <div id="calc_source" class="calc_col"></div>
+        <div id="calc_decompose" class="calc_col"></div>
+        <div id="calc_filter" class="calc_col"></div>
+        <div id="calc_level" class="calc_col"></div>
+        <div id="calc_recompose" class="calc_col"></div>
+    </div>
+</div>
+
+<script>
+    let isLeftPanelOpen = false;
+    let hpadding = 32;
+    let vpadding = 10;
+    let margin = 10;
+    let width = 128;
+    let height = 128;
+    let knobs = [];
+
+    let base1 = [1.0, 0.0, 0.0, 0];
+    let base2 = [0.0, 1.0, 0.0, 0];
+    let base3 = [0.0, 0.0, 1.0, 0];
+    // YCbCr:
+    // base1 = [0.299, 0.587, 0.114, 16];
+    // base2 = [-0.169, -0.331, 0.5, 128];
+    // base3 = [0.5, -0.419, -0.081, 128];
+
+    let inverseBasis = null;
+
+    let channelLevels = [1, 1, 1];
+
+    const viewState = {
+        zoom: 1,
+        minZoom: 1,
+        maxZoom: 64,
+        cx: 0,
+        cy: 0
+    };
+
+    const channelSettings = [
+        { mode: 'gaussian', amount: 0 },
+        { mode: 'gaussian', amount: 0 },
+        { mode: 'gaussian', amount: 0 },
+    ];
+
+    let channelStats = {
+        c1: 0,
+        c2: 0,
+        c3: 0,
+        c1m: 0,
+        c2m: 0,
+        c3m: 0
+    };
+
+    let channelKinds = ['', '', ''];
+
+    let imageSimilarityPercent = 100;
+    let meanDeltaE = 0;
+
+    const viewIds = ['source', 'c1', 'c2', 'c3', 'c1m', 'c2m', 'c3m', 'result'];
+
+    let currentImageSrc = '';
+    let pendingRestoredView = null;
+    let suppressHashSync = false;
+    let hashWriteTimer = null;
+    let applyingHash = false;
+
+    const buffers = {
+        source: document.createElement('canvas'),
+        c1: document.createElement('canvas'),
+        c2: document.createElement('canvas'),
+        c3: document.createElement('canvas'),
+        c1m: document.createElement('canvas'),
+        c2m: document.createElement('canvas'),
+        c3m: document.createElement('canvas'),
+        result: document.createElement('canvas')
+    };
+
+    const bufferContexts = {};
+    const visibleContexts = {};
+
+    let sourcePixels = null;
+    let sourceImageData = null;
+
+    let ch1 = null, ch2 = null, ch3 = null;
+    let ch1m = null, ch2m = null, ch3m = null;
+
+    let c1ImageData = null;
+    let c2ImageData = null;
+    let c3ImageData = null;
+    let c1mImageData = null;
+    let c2mImageData = null;
+    let c3mImageData = null;
+    let resultImageData = null;
+
+    let blurTmp1 = null;
+    let blurTmp2 = null;
+    let blurTmp3 = null;
+    const gaussianKernelCache = new Map();
+
+    let pipelineQueued = false;
+    let renderQueued = false;
+    let metricsTimer = null;
+
+    let decomposeDirty = true;
+    let filterDirty = true;
+    let resultDirty = true;
+    let statsDirty = true;
+    let displayDirty = true;
+    let labelsDirty = true;
+    let metricsDirty = true;
+
+    const pointers = new Map();
+    let gesture = null;
+
+    const PIXEL_INTERACTION_MIN_ZOOM = 8;
+    const PIXEL_BOX_MIN_ZOOM = 12;
+
+    let selectedPixel = null;
+    let hoveredPixel = null;
+
+    function canInspectPixels() {
+        return viewState.zoom >= PIXEL_INTERACTION_MIN_ZOOM;
+    }
+
+    function getLeftPanelWidth() {
+        const panel = document.getElementById('left_panel');
+        return panel ? panel.getBoundingClientRect().width : 0;
+    }
+
+    function openLeftPanel() {
+        document.querySelector('#left_panel_open_btn').style.display = 'none';
+        document.querySelector('#backdrop').classList.add('visible');
+        const panel = document.getElementById('left_panel');
+        if (!panel) return;
+
+        isLeftPanelOpen = true;
+        panel.classList.add('open');
+        panel.setAttribute('aria-hidden', 'false');
+
+        const width = getLeftPanelWidth();
+        document.documentElement.style.setProperty('--side-panel-offset', `${width}px`);
+    }
+
+    function closeLeftPanel() {
+        document.querySelector('#left_panel_open_btn').style.display = 'block';
+        document.querySelector('#backdrop').classList.remove('visible');
+        const panel = document.getElementById('left_panel');
+        if (!panel) return;
+
+        isLeftPanelOpen = false;
+        panel.classList.remove('open');
+        panel.setAttribute('aria-hidden', 'true');
+
+        document.documentElement.style.setProperty('--side-panel-offset', `0px`);
+    }
+
+    function toggleLeftPanel() {
+        if (isLeftPanelOpen) closeLeftPanel();
+        else openLeftPanel();
+    }
+
+    function clamp255(x) {
+        return x < 0 ? 0 : x > 255 ? 255 : x | 0;
+    }
+
+    function determinant3x3(v1, v2, v3) {
+        return (
+            v1[0] * (v2[1] * v3[2] - v2[2] * v3[1]) -
+            v1[1] * (v2[0] * v3[2] - v2[2] * v3[0]) +
+            v1[2] * (v2[0] * v3[1] - v2[1] * v3[0])
+        );
+    }
+
+    function inverseMatrix3x3(v1, v2, v3) {
+        const det = determinant3x3(v1, v2, v3);
+        if (Math.abs(det) < 1e-10) return null;
+
+        return [
+            [
+                (v2[1] * v3[2] - v2[2] * v3[1]) / det,
+                (v1[2] * v3[1] - v1[1] * v3[2]) / det,
+                (v1[1] * v2[2] - v1[2] * v2[1]) / det
+            ],
+            [
+                (v2[2] * v3[0] - v2[0] * v3[2]) / det,
+                (v1[0] * v3[2] - v1[2] * v3[0]) / det,
+                (v1[2] * v2[0] - v1[0] * v2[2]) / det
+            ],
+            [
+                (v2[0] * v3[1] - v2[1] * v3[0]) / det,
+                (v1[1] * v3[0] - v1[0] * v3[1]) / det,
+                (v1[0] * v2[1] - v1[1] * v2[0]) / det
+            ]
+        ];
+    }
+
+    function rgbSpan(value, channel) {
+        const cls = channel === 'r' ? 'calc_r' :
+                    channel === 'g' ? 'calc_g' :
+                    'calc_b';
+        return `<span class="${cls}">${value}</span>`;
+    }
+
+    function biasSpan(value) {
+        return `<span class="calc_bias">${value}</span>`;
+    }
+
+    function fn(x) {
+        // format with one decimal point at most, but remove trailing zeros
+        return parseFloat(x.toFixed(1)).toString();
+    }
+
+    function updateInverseBasis() {
+        inverseBasis = inverseMatrix3x3(base1, base2, base3);
+        if (!inverseBasis) {
+            inverseBasis = [
+                [0, 0, 0],
+                [0, 0, 0],
+                [0, 0, 0]
+            ];
+            // throw new Error('Basis vectors are not invertible.');
+        }
+        katex.render(
+            String.raw`
+                \begin{bmatrix}x \\\\ y \\\\ z\end{bmatrix}
+                =
+                \begin{bmatrix}
+                ${fn(base1[0])} & ${fn(base1[1])} & ${fn(base1[2])} \\\\
+                ${fn(base2[0])} & ${fn(base2[1])} & ${fn(base2[2])} \\\\
+                ${fn(base3[0])} & ${fn(base3[1])} & ${fn(base3[2])}
+                \end{bmatrix}
+                \begin{bmatrix}r \\\\ g \\\\ b\end{bmatrix}
+                +
+                \begin{bmatrix}
+                ${fn(base1[3])} \\\\
+                ${fn(base2[3])} \\\\
+                ${fn(base3[3])}
+                \end{bmatrix}
+            `,
+            document.getElementById("math_forward"),
+            { displayMode: true }
+        );
+        katex.render(
+            String.raw`
+                \begin{bmatrix}r \\\\ g \\\\ b\end{bmatrix}
+                =
+                \begin{bmatrix}
+                ${fn(inverseBasis[0][0])} & ${fn(inverseBasis[0][1])} & ${fn(inverseBasis[0][2])} \\\\
+                ${fn(inverseBasis[1][0])} & ${fn(inverseBasis[1][1])} & ${fn(inverseBasis[1][2])} \\\\
+                ${fn(inverseBasis[2][0])} & ${fn(inverseBasis[2][1])} & ${fn(inverseBasis[2][2])}
+                \end{bmatrix}
+                \left(
+                \begin{bmatrix}x \\\\ y \\\\ z\end{bmatrix}
+                -
+                \begin{bmatrix}
+                ${fn(base1[3])} \\\\
+                ${fn(base2[3])} \\\\
+                ${fn(base3[3])}
+                \end{bmatrix}
+                \right)
+            `,
+            document.getElementById("math_inverse"),
+            { displayMode: true }
+        );
+    }
+
+    function applyBasis(r, g, b, base) {
+        return r * base[0] + g * base[1] + b * base[2] + base[3];
+    }
+
+    function gaussianKernel1D(radius) {
+        if (radius <= 0) return [1];
+
+        const sigma = Math.max(radius / 2, 0.8);
+        const size = radius * 2 + 1;
+        const kernel = new Float32Array(size);
+        let sum = 0;
+
+        for (let i = -radius; i <= radius; i++) {
+            const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+            kernel[i + radius] = v;
+            sum += v;
+        }
+
+        for (let i = 0; i < size; i++) {
+            kernel[i] /= sum;
+        }
+
+        return kernel;
+    }
+
+    function getGaussianKernel(radius) {
+        if (!gaussianKernelCache.has(radius)) {
+            gaussianKernelCache.set(radius, gaussianKernel1D(radius));
+        }
+        return gaussianKernelCache.get(radius);
+    }
+
+    function ensureWorkingBuffers() {
+        const n = width * height;
+
+        ch1 = new Uint8ClampedArray(n);
+        ch2 = new Uint8ClampedArray(n);
+        ch3 = new Uint8ClampedArray(n);
+
+        ch1m = new Uint8ClampedArray(n);
+        ch2m = new Uint8ClampedArray(n);
+        ch3m = new Uint8ClampedArray(n);
+
+        blurTmp1 = new Float32Array(n);
+        blurTmp2 = new Float32Array(n);
+        blurTmp3 = new Float32Array(n);
+
+        c1ImageData = new ImageData(width, height);
+        c2ImageData = new ImageData(width, height);
+        c3ImageData = new ImageData(width, height);
+
+        c1mImageData = new ImageData(width, height);
+        c2mImageData = new ImageData(width, height);
+        c3mImageData = new ImageData(width, height);
+
+        resultImageData = new ImageData(width, height);
+    }
+
+    function fillGrayImageData(gray, imageData) {
+        const dst = imageData.data;
+        const n = gray.length;
+        for (let p = 0, i = 0; p < n; p++, i += 4) {
+            const v = gray[p];
+            dst[i] = v;
+            dst[i + 1] = v;
+            dst[i + 2] = v;
+            dst[i + 3] = 255;
+        }
+    }
+
+    function classifyChannel(base) {
+        const r = base[0];
+        const g = base[1];
+        const b = base[2];
+
+        const absR = Math.abs(r);
+        const absG = Math.abs(g);
+        const absB = Math.abs(b);
+
+        const absSum = absR + absG + absB;
+        if (absSum < 1e-6) return 'Degenerate';
+
+        const sum = r + g + b;
+
+        const maxAbs = Math.max(absR, absG, absB);
+        const minAbs = Math.min(absR, absG, absB);
+
+        const allNonNegative = r >= 0 && g >= 0 && b >= 0;
+        const allNonPositive = r <= 0 && g <= 0 && b <= 0;
+
+        if (maxAbs / absSum > 0.85) {
+            if (absR === maxAbs) return 'Red channel';
+            if (absG === maxAbs) return 'Green channel';
+            if (absB === maxAbs) return 'Blue channel';
+        }
+
+        if ((allNonNegative || allNonPositive) && (minAbs / maxAbs) > 0.1) {
+            return 'Luma-like';
+        }
+
+        if (Math.abs(sum) < 0.25 * absSum) {
+            return 'Chroma-like';
+        }
+
+        return 'Mixed';
+    }
+
+    function isLumaLike(base) {
+        const r = base[0], g = base[1], b = base[2];
+        if (r <= 0 || g <= 0 || b <= 0) return false;
+
+        const mn = Math.min(r, g, b);
+        const mx = Math.max(r, g, b);
+        return mn > 0 && mx / mn < 4.0;
+    }
+
+    function getLevelAnchor(base) {
+        return classifyChannel(base) === 'Luma-like' ? 128 : base[3];
+    }
+
+    function fillContributionImageData(channel, imageData, base, gain = 1.0) {
+        const dst = imageData.data;
+        const n = channel.length;
+
+        const br = base[0];
+        const bg = base[1];
+        const bb = base[2];
+        const bias = base[3];
+
+        const lumaLike = isLumaLike(base);
+
+        for (let p = 0, i = 0; p < n; p++, i += 4) {
+            const dc = (channel[p] - bias) * gain;
+
+            if (lumaLike) {
+                const v = clamp255(128 + dc + 0.5);
+                dst[i] = v;
+                dst[i + 1] = v;
+                dst[i + 2] = v;
+                dst[i + 3] = 255;
+            } else {
+                dst[i] = clamp255(128 + dc * br + 0.5);
+                dst[i + 1] = clamp255(128 + dc * bg + 0.5);
+                dst[i + 2] = clamp255(128 + dc * bb + 0.5);
+                dst[i + 3] = 255;
+            }
+        }
+    }
+
+    function decomposeChannels() {
+        if (!sourcePixels) return;
+
+        const src = sourcePixels;
+        const n = width * height;
+        const b1 = base1;
+        const b2 = base2;
+        const b3 = base3;
+
+        for (let p = 0, i = 0; p < n; p++, i += 4) {
+            const r = src[i];
+            const g = src[i + 1];
+            const b = src[i + 2];
+
+            ch1[p] = clamp255(applyBasis(r, g, b, b1) + 0.5);
+            ch2[p] = clamp255(applyBasis(r, g, b, b2) + 0.5);
+            ch3[p] = clamp255(applyBasis(r, g, b, b3) + 0.5);
+        }
+    }
+
+    function gaussianBlurGrayArray(src, dst, tmp, w, h, radius) {
+        radius = Math.max(0, Math.floor(radius));
+        if (radius <= 0) {
+            dst.set(src);
+            return;
+        }
+
+        const kernel = getGaussianKernel(radius);
+
+        for (let y = 0; y < h; y++) {
+            const row = y * w;
+            for (let x = 0; x < w; x++) {
+                let sum = 0;
+                for (let k = -radius; k <= radius; k++) {
+                    let xx = x + k;
+                    if (xx < 0) xx = 0;
+                    else if (xx >= w) xx = w - 1;
+                    sum += src[row + xx] * kernel[k + radius];
+                }
+                tmp[row + x] = sum;
+            }
+        }
+
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                let sum = 0;
+                for (let k = -radius; k <= radius; k++) {
+                    let yy = y + k;
+                    if (yy < 0) yy = 0;
+                    else if (yy >= h) yy = h - 1;
+                    sum += tmp[yy * w + x] * kernel[k + radius];
+                }
+                dst[y * w + x] = clamp255(sum + 0.5);
+            }
+        }
+    }
+
+    function pixelateGrayArray(src, dst, w, h, blockSize) {
+        blockSize = Math.max(1, Math.floor(blockSize));
+        if (blockSize <= 1) {
+            dst.set(src);
+            return;
+        }
+
+        for (let by = 0; by < h; by += blockSize) {
+            for (let bx = 0; bx < w; bx += blockSize) {
+                let sum = 0;
+                let count = 0;
+
+                const yEnd = Math.min(by + blockSize, h);
+                const xEnd = Math.min(bx + blockSize, w);
+
+                for (let y = by; y < yEnd; y++) {
+                    const row = y * w;
+                    for (let x = bx; x < xEnd; x++) {
+                        sum += src[row + x];
+                        count++;
+                    }
+                }
+
+                const v = clamp255(sum / count + 0.5);
+
+                for (let y = by; y < yEnd; y++) {
+                    const row = y * w;
+                    for (let x = bx; x < xEnd; x++) {
+                        dst[row + x] = v;
+                    }
+                }
+            }
+        }
+    }
+
+    function downsampleGrayArrayBox(src, dst, w, h, factor) {
+        factor = Math.max(1, Math.floor(factor));
+        const rw = Math.max(1, Math.ceil(w / factor));
+        const rh = Math.max(1, Math.ceil(h / factor));
+
+        for (let ry = 0; ry < rh; ry++) {
+            const sy0 = ry * factor;
+            const sy1 = Math.min(sy0 + factor, h);
+
+            for (let rx = 0; rx < rw; rx++) {
+                const sx0 = rx * factor;
+                const sx1 = Math.min(sx0 + factor, w);
+
+                let sum = 0;
+                let count = 0;
+
+                for (let y = sy0; y < sy1; y++) {
+                    const row = y * w;
+                    for (let x = sx0; x < sx1; x++) {
+                        sum += src[row + x];
+                        count++;
+                    }
+                }
+
+                dst[ry * rw + rx] = count ? (sum / count) : 0;
+            }
+        }
+
+        return { rw, rh };
+    }
+
+    function bilinearSampleGray(src, rw, rh, x, y) {
+        const x0 = Math.floor(x);
+        const y0 = Math.floor(y);
+        const x1 = x0 + 1;
+        const y1 = y0 + 1;
+
+        const cx0 = Math.max(0, Math.min(rw - 1, x0));
+        const cy0 = Math.max(0, Math.min(rh - 1, y0));
+        const cx1 = Math.max(0, Math.min(rw - 1, x1));
+        const cy1 = Math.max(0, Math.min(rh - 1, y1));
+
+        const tx = x - x0;
+        const ty = y - y0;
+
+        const p00 = src[cy0 * rw + cx0];
+        const p10 = src[cy0 * rw + cx1];
+        const p01 = src[cy1 * rw + cx0];
+        const p11 = src[cy1 * rw + cx1];
+
+        const a = p00 * (1 - tx) + p10 * tx;
+        const b = p01 * (1 - tx) + p11 * tx;
+        return a * (1 - ty) + b * ty;
+    }
+
+    function subsampleGrayArray(src, dst, w, h, factor) {
+        factor = Math.max(1, Math.floor(factor));
+        if (factor <= 1) {
+            dst.set(src);
+            return;
+        }
+
+        const rw = Math.max(1, Math.ceil(w / factor));
+        const rh = Math.max(1, Math.ceil(h / factor));
+        const reduced = new Float32Array(rw * rh);
+
+        downsampleGrayArrayBox(src, reduced, w, h, factor);
+
+        for (let y = 0; y < h; y++) {
+            const sy = ((y + 0.5) / factor) - 0.5;
+
+            for (let x = 0; x < w; x++) {
+                const sx = ((x + 0.5) / factor) - 0.5;
+                dst[y * w + x] = clamp255(bilinearSampleGray(reduced, rw, rh, sx, sy) + 0.5);
+            }
+        }
+    }
+
+    function filterGrayArray(src, dst, tmp, w, h, settings) {
+        if (!settings || settings.mode === 'none' || settings.amount <= 0) {
+            dst.set(src);
+            return;
+        }
+
+        if (settings.mode === 'gaussian' && settings.amount > 0) {
+            gaussianBlurGrayArray(src, dst, tmp, w, h, settings.amount);
+            return;
+        }
+
+        if (settings.mode === 'pixelate' && settings.amount > 1) {
+            pixelateGrayArray(src, dst, w, h, settings.amount);
+            return;
+        }
+
+        if (settings.mode === 'subsample' && settings.amount > 1) {
+            subsampleGrayArray(src, dst, w, h, settings.amount);
+            return;
+        }
+
+        dst.set(src);
+    }
+
+    function applyChannelModifications() {
+        filterGrayArray(ch1, ch1m, blurTmp1, width, height, channelSettings[0]);
+        filterGrayArray(ch2, ch2m, blurTmp2, width, height, channelSettings[1]);
+        filterGrayArray(ch3, ch3m, blurTmp3, width, height, channelSettings[2]);
+    }
+
+    function recomposeFromModifiedChannels() {
+        const dst = resultImageData.data;
+        const n = width * height;
+        const ib = inverseBasis;
+
+        const b10 = base1[3];
+        const b20 = base2[3];
+        const b30 = base3[3];
+
+        const a1 = getLevelAnchor(base1);
+        const a2 = getLevelAnchor(base2);
+        const a3 = getLevelAnchor(base3);
+
+        const g1 = channelLevels[0];
+        const g2 = channelLevels[1];
+        const g3 = channelLevels[2];
+
+        const m1 = ch1m;
+        const m2 = ch2m;
+        const m3 = ch3m;
+
+        for (let p = 0, i = 0; p < n; p++, i += 4) {
+            const u1 = a1 + (m1[p] - a1) * g1;
+            const u2 = a2 + (m2[p] - a2) * g2;
+            const u3 = a3 + (m3[p] - a3) * g3;
+
+            const d1 = u1 - b10;
+            const d2 = u2 - b20;
+            const d3 = u3 - b30;
+
+            const r = ib[0][0] * d1 + ib[0][1] * d2 + ib[0][2] * d3;
+            const g = ib[1][0] * d1 + ib[1][1] * d2 + ib[1][2] * d3;
+            const b = ib[2][0] * d1 + ib[2][1] * d2 + ib[2][2] * d3;
+
+            dst[i] = clamp255(r + 0.5);
+            dst[i + 1] = clamp255(g + 0.5);
+            dst[i + 2] = clamp255(b + 0.5);
+            dst[i + 3] = 255;
+        }
+    }
+
+    function channelVariance(c) {
+        const n = c.length;
+        if (n === 0) return 0;
+
+        let mean = 0;
+        for (let i = 0; i < n; i++) mean += c[i];
+        mean /= n;
+
+        let varSum = 0;
+        for (let i = 0; i < n; i++) {
+            const d = c[i] - mean;
+            varSum += d * d;
+        }
+
+        return varSum / n;
+    }
+
+    function computeRelativeVarianceStats(a, b, c) {
+        const va = channelVariance(a);
+        const vb = channelVariance(b);
+        const vc = channelVariance(c);
+
+        const total = va + vb + vc;
+        if (total <= 1e-12) return { a: 0, b: 0, c: 0 };
+
+        return {
+            a: 100 * va / total,
+            b: 100 * vb / total,
+            c: 100 * vc / total
+        };
+    }
+
+    function updateChannelKinds() {
+        const k1 = classifyChannel(base1);
+        const k2 = classifyChannel(base2);
+        const k3 = classifyChannel(base3);
+
+        channelKinds = [k1, k2, k3];
+    }
+
+    function updateStats() {
+        const rawStats = computeRelativeVarianceStats(ch1, ch2, ch3);
+        channelStats.c1 = rawStats.a;
+        channelStats.c2 = rawStats.b;
+        channelStats.c3 = rawStats.c;
+
+        const modStats = computeRelativeVarianceStats(ch1m, ch2m, ch3m);
+        channelStats.c1m = modStats.a;
+        channelStats.c2m = modStats.b;
+        channelStats.c3m = modStats.c;
+    }
+
+    function flushDirtyBuffersToCanvases() {
+        if (decomposeDirty || displayDirty) {
+            fillGrayImageData(ch1, c1ImageData);
+            fillGrayImageData(ch2, c2ImageData);
+            fillGrayImageData(ch3, c3ImageData);
+
+            bufferContexts.c1.putImageData(c1ImageData, 0, 0);
+            bufferContexts.c2.putImageData(c2ImageData, 0, 0);
+            bufferContexts.c3.putImageData(c3ImageData, 0, 0);
+        }
+
+        if (filterDirty || displayDirty) {
+            fillGrayImageData(ch1m, c1mImageData);
+            fillGrayImageData(ch2m, c2mImageData);
+            fillGrayImageData(ch3m, c3mImageData);
+
+            bufferContexts.c1m.putImageData(c1mImageData, 0, 0);
+            bufferContexts.c2m.putImageData(c2mImageData, 0, 0);
+            bufferContexts.c3m.putImageData(c3mImageData, 0, 0);
+        }
+        if (resultDirty || displayDirty) {
+            bufferContexts.result.putImageData(resultImageData, 0, 0);
+        }
+    }
+
+    function updateHtmlLabels() {
+        Object.keys(channelStats).forEach((id, i) => {
+            const container = document.getElementById(id);
+            if (!container) return;
+
+            const label = container.querySelector('.energy-label');
+            if (label) {
+                if (i < 3) {
+                    label.innerHTML = `
+                        Channel ${(i % 3) + 1}: ${channelKinds[i % 3] || ''}, Energy: ${channelStats[id].toFixed(0)}%
+                    `;
+                } else {
+                    label.innerHTML = `
+                        Energy: ${channelStats[id].toFixed(0)}%
+                    `;
+                }
+            }
+        });
+
+        const resultContainer = document.getElementById('result');
+        if (resultContainer) {
+            const label = resultContainer.querySelector('.similarity-label');
+            if (label) {
+                label.textContent = `Similarity: ${imageSimilarityPercent.toFixed(1)}%`;
+            }
+        }
+    }
+
+    function srgbToLinear(c) {
+        c /= 255;
+        if (c <= 0.04045) return c / 12.92;
+        return Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+
+    function luminance(r, g, b) {
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+
+    function rgbToXyz(r, g, b) {
+        const rl = srgbToLinear(r);
+        const gl = srgbToLinear(g);
+        const bl = srgbToLinear(b);
+
+        return [
+            rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375,
+            rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750,
+            rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041
+        ];
+    }
+
+    function xyzToLab(x, y, z) {
+        const xn = 0.95047;
+        const yn = 1.00000;
+        const zn = 1.08883;
+
+        function f(t) {
+            const delta = 6 / 29;
+            const delta3 = delta * delta * delta;
+            if (t > delta3) return Math.cbrt(t);
+            return t / (3 * delta * delta) + 4 / 29;
+        }
+
+        const fx = f(x / xn);
+        const fy = f(y / yn);
+        const fz = f(z / zn);
+
+        return [
+            116 * fy - 16,
+            500 * (fx - fy),
+            200 * (fy - fz)
+        ];
+    }
+
+    function rgbToLab(r, g, b) {
+        const xyz = rgbToXyz(r, g, b);
+        return xyzToLab(xyz[0], xyz[1], xyz[2]);
+    }
+
+    function deltaE76(lab1, lab2) {
+        const dL = lab1[0] - lab2[0];
+        const da = lab1[1] - lab2[1];
+        const db = lab1[2] - lab2[2];
+        return Math.sqrt(dL * dL + da * da + db * db);
+    }
+
+    function computeMeanDeltaESubsampled(dataA, dataB, step = 4) {
+        if (!dataA || !dataB) return 0;
+
+        let sum = 0;
+        let count = 0;
+
+        for (let y = 0; y < height; y += step) {
+            const row = y * width;
+            for (let x = 0; x < width; x += step) {
+                const i = (row + x) * 4;
+
+                const labA = rgbToLab(dataA[i], dataA[i + 1], dataA[i + 2]);
+                const labB = rgbToLab(dataB[i], dataB[i + 1], dataB[i + 2]);
+
+                sum += deltaE76(labA, labB);
+                count++;
+            }
+        }
+
+        return count ? sum / count : 0;
+    }
+
+    function deltaEToMatchPercent(meanDeltaE) {
+        return 100 * Math.exp(-meanDeltaE / 12);
+    }
+
+    function scheduleMetrics() {
+        clearTimeout(metricsTimer);
+        metricsTimer = setTimeout(() => {
+            if (!sourceImageData || !resultImageData) {
+                meanDeltaE = 0;
+                imageSimilarityPercent = 100;
+            } else {
+                meanDeltaE = computeMeanDeltaESubsampled(
+                    sourceImageData.data,
+                    resultImageData.data,
+                    4
+                );
+                imageSimilarityPercent = deltaEToMatchPercent(meanDeltaE);
+            }
+
+            updateHtmlLabels();
+        }, 120);
+    }
+
+    function schedulePipeline() {
+        if (pipelineQueued) return;
+        pipelineQueued = true;
+        requestAnimationFrame(runPipeline);
+    }
+
+    function scheduleRender() {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+            renderQueued = false;
+            renderAll();
+        });
+    }
+
+    function markBasisDirty() {
+        decomposeDirty = true;
+        filterDirty = true;
+        resultDirty = true;
+        statsDirty = true;
+        displayDirty = true;
+        labelsDirty = true;
+        metricsDirty = true;
+        schedulePipeline();
+    }
+
+    function markFilterDirty() {
+        filterDirty = true;
+        resultDirty = true;
+        statsDirty = true;
+        displayDirty = true;
+        labelsDirty = true;
+        metricsDirty = true;
+        schedulePipeline();
+    }
+
+    function runPipeline() {
+        pipelineQueued = false;
+        if (!sourcePixels || !inverseBasis) return;
+
+        const hadDecomposeDirty = decomposeDirty;
+        const hadFilterDirty = filterDirty;
+        const hadResultDirty = resultDirty;
+        const hadStatsDirty = statsDirty;
+        const hadDisplayDirty = displayDirty;
+        const hadLabelsDirty = labelsDirty;
+        const hadMetricsDirty = metricsDirty;
+
+        if (decomposeDirty) {
+            decomposeChannels();
+        }
+
+        if (filterDirty) {
+            applyChannelModifications();
+        }
+
+        if (resultDirty) {
+            recomposeFromModifiedChannels();
+        }
+
+        if (statsDirty) {
+            updateStats();
+            updateChannelKinds();
+        }
+
+        if (hadDecomposeDirty || hadFilterDirty || hadResultDirty || hadDisplayDirty) {
+            flushDirtyBuffersToCanvases();
+        }
+
+        if (hadStatsDirty || hadLabelsDirty) {
+            updateHtmlLabels();
+        }
+
+        if (hadDecomposeDirty || hadFilterDirty || hadResultDirty || hadDisplayDirty) {
+            renderAll();
+        }
+
+        if (hadMetricsDirty) {
+            scheduleMetrics();
+        }
+
+        renderCalcStrip();
+
+        decomposeDirty = false;
+        filterDirty = false;
+        resultDirty = false;
+        statsDirty = false;
+        displayDirty = false;
+        labelsDirty = false;
+        metricsDirty = false;
+    }
+
+    function getCanvasDisplaySize(canvas) {
+        const dpr = window.devicePixelRatio || 1;
+        return {
+            w: canvas.width / dpr,
+            h: canvas.height / dpr
+        };
+    }
+
+    function getFitScale(canvas) {
+        if (!width || !height) return 1;
+        const size = getCanvasDisplaySize(canvas);
+        return Math.min(size.w / width, size.h / height);
+    }
+
+    function getEffectiveScale(canvas) {
+        return getFitScale(canvas) * viewState.zoom;
+    }
+
+    function resizeVisibleCanvases() {
+        viewIds.forEach(id => {
+            const container = document.getElementById(id);
+            const canvas = container.querySelector('canvas');
+            const rect = container.getBoundingClientRect();
+
+            const dpr = window.devicePixelRatio || 1;
+            const displayWidth = Math.max(1, Math.round(rect.width));
+            const displayHeight = Math.max(1, Math.round(rect.height));
+
+            canvas.width = Math.round(displayWidth * dpr);
+            canvas.height = Math.round(displayHeight * dpr);
+            canvas.style.width = `${displayWidth}px`;
+            canvas.style.height = `${displayHeight}px`;
+        });
+    }
+
+    function updateZoomLimits() {
+        viewState.minZoom = 1;
+        viewState.maxZoom = 64;
+        viewState.zoom = Math.max(viewState.minZoom, Math.min(viewState.maxZoom, viewState.zoom || 1));
+    }
+
+    function resetView() {
+        viewState.cx = width / 2;
+        viewState.cy = height / 2;
+        updateZoomLimits();
+        viewState.zoom = 1;
+        clampView();
+        renderAll();
+        scheduleHashWrite();
+    }
+
+    function clampView() {
+        let maxHalfW = 0;
+        let maxHalfH = 0;
+
+        viewIds.forEach(id => {
+            const canvas = document.querySelector(`#${id} canvas`);
+            if (!canvas) return;
+
+            const size = getCanvasDisplaySize(canvas);
+            const scale = getEffectiveScale(canvas);
+
+            const halfW = size.w / (2 * scale);
+            const halfH = size.h / (2 * scale);
+
+            maxHalfW = Math.max(maxHalfW, halfW);
+            maxHalfH = Math.max(maxHalfH, halfH);
+        });
+
+        if (maxHalfW * 2 >= width) {
+            viewState.cx = width / 2;
+        } else {
+            viewState.cx = Math.max(maxHalfW, Math.min(width - maxHalfW, viewState.cx));
+        }
+
+        if (maxHalfH * 2 >= height) {
+            viewState.cy = height / 2;
+        } else {
+            viewState.cy = Math.max(maxHalfH, Math.min(height - maxHalfH, viewState.cy));
+        }
+    }
+
+    function imageToScreen(canvas, ix, iy) {
+        const size = getCanvasDisplaySize(canvas);
+        const scale = getEffectiveScale(canvas);
+
+        const sw = size.w / scale;
+        const sh = size.h / scale;
+        const sx = viewState.cx - sw / 2;
+        const sy = viewState.cy - sh / 2;
+
+        return {
+            x: ((ix + 0.5 - sx) / sw) * size.w,
+            y: ((iy + 0.5 - sy) / sh) * size.h
+        };
+    }
+
+    function getDisplayColorForView(viewId, x, y) {
+        if (x < 0 || y < 0 || x >= width || y >= height) return null;
+
+        const ctx = bufferContexts[viewId];
+        if (!ctx) return null;
+
+        const data = ctx.getImageData(x, y, 1, 1).data;
+        return {
+            r: data[0],
+            g: data[1],
+            b: data[2],
+            a: data[3]
+        };
+    }
+
+    function getContrastingStroke(r, g, b) {
+        const lum = luminance(r, g, b);
+        return lum > 140 ? 'rgba(0,0,0,0.95)' : 'rgba(255,255,255,0.95)';
+    }
+
+    function getPixelFromEvent(canvas, clientX, clientY) {
+        const pt = screenToImage(canvas, clientX, clientY);
+
+        const x = Math.floor(pt.x);
+        const y = Math.floor(pt.y);
+
+        if (x < 0 || y < 0 || x >= width || y >= height) return null;
+
+        return { x, y };
+    }
+
+    function f2(x) {
+        return Number(x).toFixed(2);
+    }
+
+    function swatchHtml(r, g, b) {
+        return `<span class="calc_swatch" style="background: rgb(${r}, ${g}, ${b})"></span>`;
+    }
+
+    function getSelectedPixelMath() {
+        if (!selectedPixel || !sourcePixels || !inverseBasis || !ch1 || !ch1m || !resultImageData) return null;
+
+        const x = selectedPixel.x;
+        const y = selectedPixel.y;
+        const idx = y * width + x;
+        const i = idx * 4;
+
+        const r = sourcePixels[i];
+        const g = sourcePixels[i + 1];
+        const b = sourcePixels[i + 2];
+
+        const raw1 = applyBasis(r, g, b, base1);
+        const raw2 = applyBasis(r, g, b, base2);
+        const raw3 = applyBasis(r, g, b, base3);
+
+        const c1v = ch1[idx];
+        const c2v = ch2[idx];
+        const c3v = ch3[idx];
+
+        const c1mv = ch1m[idx];
+        const c2mv = ch2m[idx];
+        const c3mv = ch3m[idx];
+
+        const a1 = getLevelAnchor(base1);
+        const a2 = getLevelAnchor(base2);
+        const a3 = getLevelAnchor(base3);
+
+        const u1 = a1 + (c1mv - a1) * channelLevels[0];
+        const u2 = a2 + (c2mv - a2) * channelLevels[1];
+        const u3 = a3 + (c3mv - a3) * channelLevels[2];
+
+        const d1 = u1 - base1[3];
+        const d2 = u2 - base2[3];
+        const d3 = u3 - base3[3];
+
+        const rf = inverseBasis[0][0] * d1 + inverseBasis[0][1] * d2 + inverseBasis[0][2] * d3;
+        const gf = inverseBasis[1][0] * d1 + inverseBasis[1][1] * d2 + inverseBasis[1][2] * d3;
+        const bf = inverseBasis[2][0] * d1 + inverseBasis[2][1] * d2 + inverseBasis[2][2] * d3;
+
+        return {
+            x, y,
+            rgb: [r, g, b],
+            raw: [raw1, raw2, raw3],
+            dec: [c1v, c2v, c3v],
+            mod: [c1mv, c2mv, c3mv],
+            anchors: [a1, a2, a3],
+            levels: [...channelLevels],
+            leveled: [u1, u2, u3],
+            deltas: [d1, d2, d3],
+            outFloat: [rf, gf, bf],
+            outByte: [
+                clamp255(rf + 0.5),
+                clamp255(gf + 0.5),
+                clamp255(bf + 0.5)
+            ]
+        };
+    }
+
+    function decomposeLine(name, base, rgb, raw, byteVal) {
+        const [r, g, b] = rgb;
+
+        return `
+            <div class="calc_eq calc_mono">
+                ${name} =
+                ${rgbSpan(r, 'r')} · ${f2(base[0])} +
+                ${rgbSpan(g, 'g')} · ${f2(base[1])} +
+                ${rgbSpan(b, 'b')} · ${f2(base[2])} +
+                ${biasSpan(f2(base[3]))}
+                = ${f2(raw)} <span class="calc_arrow">→</span> ${byteVal}
+            </div>
+        `;
+    }
+
+    function filterLevelLine(name, before, after, settings, anchor, level, leveled) {
+        const filterPart = (!settings || settings.amount <= 0 || settings.mode === 'none')
+            ? `${name}' = ${name} = ${after}`
+            : `${name}' = ${settings.mode}(${name}) = ${after}`;
+
+        return `
+            <div class="calc_eq calc_mono">
+                ${filterPart}<br>
+                u${name.slice(1)} = ${biasSpan(f2(anchor))} + (${after} - ${biasSpan(f2(anchor))}) · ${f2(level)} = ${f2(leveled)}
+            </div>
+        `;
+    }
+
+    function recomposeLine(name, row, d1, d2, d3, resultFloat, resultByte) {
+        return `
+            <div class="calc_eq calc_mono">
+                ${name}' =
+                ${f2(row[0])} · ${f2(d1)} +
+                ${f2(row[1])} · ${f2(d2)} +
+                ${f2(row[2])} · ${f2(d3)}
+                = ${f2(resultFloat)} <span class="calc_arrow">→</span> <span class='calc_${name}'>${resultByte}</span>
+            </div>
+        `;
+    }
+
+    function renderCalcStrip() {
+        const sourceEl = document.getElementById('calc_source');
+        const decomposeEl = document.getElementById('calc_decompose');
+        const filterEl = document.getElementById('calc_filter');
+        const levelEl = document.getElementById('calc_level');
+        const recomposeEl = document.getElementById('calc_recompose');
+
+        if (!sourceEl || !decomposeEl || !filterEl || !recomposeEl) return;
+
+        const m = getSelectedPixelMath();
+        if (!m) {
+            sourceEl.innerHTML = `<div class="calc_title">Selected pixel</div><div class="calc_dim">Zoom in and click a pixel.</div>`;
+            decomposeEl.innerHTML = '';
+            filterEl.innerHTML = '';
+            if (levelEl) levelEl.innerHTML = '';
+            recomposeEl.innerHTML = '';
+            return;
+        }
+
+        sourceEl.innerHTML = `
+            <div class="calc_title">Source</div>
+            <div class="calc_eq calc_mono">
+                <!-- pixel = (${m.x}, ${m.y})<br>
+                r = ${m.rgb[0]}, g = ${m.rgb[1]}, b = ${m.rgb[2]}<br>
+                -->
+                ${swatchHtml(m.rgb[0], m.rgb[1], m.rgb[2])}RGB = (<span class='calc_r'>${m.rgb[0]}</span>, <span class='calc_g'>${m.rgb[1]}</span>, <span class='calc_b'>${m.rgb[2]}</span>)
+            </div>
+        `;
+
+        decomposeEl.innerHTML = `
+            <div class="calc_title">Decompose</div>
+            ${decomposeLine('x₁', base1, m.rgb, m.raw[0], m.dec[0])}
+            ${decomposeLine('x₂', base2, m.rgb, m.raw[1], m.dec[1])}
+            ${decomposeLine('x₃', base3, m.rgb, m.raw[2], m.dec[2])}
+        `;
+
+        filterEl.innerHTML = `
+            <div class="calc_title">Filter / Level</div>
+            ${filterLevelLine('x₁', m.dec[0], m.mod[0], channelSettings[0], m.anchors[0], m.levels[0], m.leveled[0])}
+            ${filterLevelLine('x₂', m.dec[1], m.mod[1], channelSettings[1], m.anchors[1], m.levels[1], m.leveled[1])}
+            ${filterLevelLine('x₃', m.dec[2], m.mod[2], channelSettings[2], m.anchors[2], m.levels[2], m.leveled[2])}
+        `;
+
+        if (levelEl) {
+            levelEl.innerHTML = '';
+            levelEl.style.display = 'none';
+        }
+
+        recomposeEl.innerHTML = `
+            <div class="calc_title">Recompose</div>
+            <div class="calc_eq calc_mono">
+                d₁ = ${f2(m.leveled[0])} - ${biasSpan(f2(base1[3]))} = ${f2(m.deltas[0])}<br>
+                d₂ = ${f2(m.leveled[1])} - ${biasSpan(f2(base2[3]))} = ${f2(m.deltas[1])}<br>
+                d₃ = ${f2(m.leveled[2])} - ${biasSpan(f2(base3[3]))} = ${f2(m.deltas[2])}
+            </div>
+            ${recomposeLine('r', inverseBasis[0], m.deltas[0], m.deltas[1], m.deltas[2], m.outFloat[0], m.outByte[0])}
+            ${recomposeLine('g', inverseBasis[1], m.deltas[0], m.deltas[1], m.deltas[2], m.outFloat[1], m.outByte[1])}
+            ${recomposeLine('b', inverseBasis[2], m.deltas[0], m.deltas[1], m.deltas[2], m.outFloat[2], m.outByte[2])}
+            <div class="calc_eq calc_mono">
+                ${swatchHtml(m.outByte[0], m.outByte[1], m.outByte[2])}RGB = (<span class='calc_r'>${m.outByte[0]}</span>, <span class='calc_g'>${m.outByte[1]}</span>, <span class='calc_b'>${m.outByte[2]}</span>)
+            </div>
+        `;
+    }
+
+    function layoutCalcStrip(windowWidth, windowHeight, ih, iv, c0w, c1w) {
+        const strip = document.getElementById('calc_strip');
+        if (!strip) return;
+
+        const top = margin + 3 * iv + 2 * vpadding + 10;
+        const available = Math.max(84, windowHeight - top - 8);
+
+        strip.style.top = `${top}px`;
+        strip.style.height = `${available}px`;
+
+        const sourceLeft = margin;
+        const decomposeLeft = margin + ih + c0w + hpadding * 2;
+        const filterLeft = margin + ih * 2 + c0w + c1w + hpadding * 4;
+
+        const sourceW = Math.max(150, ih * 0.95);
+        const decomposeW = Math.max(300, ih + 110);
+        const filterW = Math.max(280, ih + 80);
+        const resultW = Math.max(300, ih + 110);
+
+        // move recompose next to filter
+        const resultLeft = filterLeft + filterW + hpadding * 2 - c0w * 0.5;
+
+        const sourceEl = document.getElementById('calc_source');
+        const decomposeEl = document.getElementById('calc_decompose');
+        const filterEl = document.getElementById('calc_filter');
+        const levelEl = document.getElementById('calc_level');
+        const recomposeEl = document.getElementById('calc_recompose');
+
+        if (sourceEl) {
+            sourceEl.style.display = 'block';
+            sourceEl.style.left = `${sourceLeft}px`;
+            sourceEl.style.bottom = `0px`;
+            sourceEl.style.width = `${sourceW}px`;
+        }
+
+        if (decomposeEl) {
+            decomposeEl.style.display = 'block';
+            decomposeEl.style.left = `${decomposeLeft}px`;
+            decomposeEl.style.bottom = `0px`;
+            decomposeEl.style.width = `${decomposeW}px`;
+        }
+
+        if (filterEl) {
+            filterEl.style.display = 'block';
+            filterEl.style.left = `${filterLeft}px`;
+            filterEl.style.bottom = `0px`;
+            filterEl.style.width = `${filterW}px`;
+        }
+
+        if (levelEl) {
+            levelEl.style.display = 'none';
+            levelEl.style.width = `0px`;
+        }
+
+        if (recomposeEl) {
+            recomposeEl.style.display = 'block';
+            recomposeEl.style.left = `${resultLeft}px`;
+            recomposeEl.style.bottom = `0px`;
+            recomposeEl.style.width = `${resultW}px`;
+        }
+    }
+
+    function setSelectedPixel(pixel) {
+        selectedPixel = pixel;
+        renderCalcStrip();
+        scheduleRender();
+    }
+
+    function setHoveredPixel(pixel) {
+        const same =
+            hoveredPixel &&
+            pixel &&
+            hoveredPixel.x === pixel.x &&
+            hoveredPixel.y === pixel.y;
+
+        if (same) return;
+
+        if (!pixel && !hoveredPixel) return;
+
+        hoveredPixel = pixel;
+        scheduleRender();
+    }
+
+    function drawPixelMarker(ctx, canvas, viewId, pixel, isSelected) {
+        if (!pixel) return;
+
+        const pos = imageToScreen(canvas, pixel.x, pixel.y);
+        const scale = getEffectiveScale(canvas);
+
+        ctx.save();
+
+        const px = pos.x;
+        const py = pos.y;
+
+        if (scale >= PIXEL_BOX_MIN_ZOOM) {
+            const boxSize = Math.max(1, Math.round(scale));
+
+            ctx.lineWidth = isSelected ? 2.5 : 1.25;
+            ctx.strokeStyle = isSelected ? '#ff2d7a' : 'rgba(255,255,255,0.95)';
+            ctx.shadowColor = isSelected ? 'rgba(255,45,122,0.85)' : 'rgba(255,255,255,0.45)';
+            ctx.shadowBlur = isSelected ? 10 : 5;
+
+            ctx.strokeRect(
+                Math.round(px - boxSize / 2),
+                Math.round(py - boxSize / 2),
+                Math.round(boxSize),
+                Math.round(boxSize)
+            );
+
+            ctx.shadowBlur = 0;
+        } else if (isSelected) {
+            const c = getDisplayColorForView(viewId, pixel.x, pixel.y) || { r: 255, g: 45, b: 122 };
+            const stroke = getContrastingStroke(c.r, c.g, c.b);
+
+            ctx.beginPath();
+            ctx.arc(px, py, 6, 0, Math.PI * 2);
+            ctx.fillStyle = `rgb(${c.r}, ${c.g}, ${c.b})`;
+            ctx.fill();
+
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = stroke;
+            ctx.stroke();
+        } else {
+            ctx.beginPath();
+            ctx.arc(px, py, 4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.95)';
+            ctx.fill();
+
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+            ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    function renderView(viewId) {
+        const visibleCanvas = document.querySelector(`#${viewId} canvas`);
+        if (!visibleCanvas) return;
+
+        const ctx = visibleContexts[viewId];
+        const srcCanvas = buffers[viewId];
+        const dpr = window.devicePixelRatio || 1;
+        const size = getCanvasDisplaySize(visibleCanvas);
+        const dw = size.w;
+        const dh = size.h;
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, dw, dh);
+
+        if (!srcCanvas || !srcCanvas.width || !srcCanvas.height) return;
+
+        const scale = getEffectiveScale(visibleCanvas);
+        const sw = dw / scale;
+        const sh = dh / scale;
+        const sx = viewState.cx - sw / 2;
+        const sy = viewState.cy - sh / 2;
+
+        ctx.imageSmoothingEnabled = !(viewState.zoom > 4);
+        ctx.imageSmoothingQuality = 'low';
+
+        ctx.drawImage(
+            srcCanvas,
+            sx, sy, sw, sh,
+            0, 0, dw, dh
+        );
+
+        if (canInspectPixels() && hoveredPixel) {
+            drawPixelMarker(ctx, visibleCanvas, viewId, hoveredPixel, false);
+        }
+
+        if (selectedPixel) {
+            drawPixelMarker(ctx, visibleCanvas, viewId, selectedPixel, true);
+        }
+    }
+
+    function renderAll() {
+        if (!canInspectPixels()) {
+            hoveredPixel = null;
+        }
+        for (const id of viewIds) {
+            renderView(id);
+        }
+    }
+
+    function handleResize() {
+        const windowWidth = window.innerWidth;
+        const windowHeight = window.innerHeight;
+
+        const scaleFactor = Math.min(1.0, 1060.0 / windowHeight);
+
+        const c0w = 180 * scaleFactor;
+        const c1w = 100 * scaleFactor;
+        const ch = 128;
+
+        const ih = (windowWidth - 2 * margin - c0w - 2 * c1w - 6 * hpadding) / 4;
+        const iv = (windowHeight - ch - 2 * margin - 2 * vpadding) / 3;
+        // const ih = (windowWidth - 2 * margin) * 0.5;
+        // const iv = windowHeight - 2 * margin;
+        // const h = (ih - hpadding) / 6.0;
+        // const h2 = (ih - hpadding * 2) / 6.0;
+        // const v = (iv - vpadding * 2) / 7.0;
+        // const imageChooserHeight = 96;
+
+        const bg = document.querySelector('#bg');
+        if (bg) {
+            bg.replaceChildren();
+        }
+
+        const flow = new FlowSVG({
+            container: "#bg",
+            width: windowWidth,
+            height: windowHeight
+        });
+
+        flow.createPath({ points: [
+            margin + ih * 0.5,
+            margin + iv * 1.5 + vpadding,
+            margin + ih * 0.5,
+            margin + iv * 0.5 + vpadding,
+            margin + ih + hpadding + c0w * 0.5,
+            margin + iv * 0.5 + vpadding,
+        ]});
+        flow.createPath({ points: [
+            margin + ih * 0.5,
+            margin + iv * 1.5 + vpadding,
+            margin + ih + hpadding + c0w * 0.5,
+            margin + iv * 1.5 + vpadding,
+        ]});
+        flow.createPath({ points: [
+            margin + ih * 0.5,
+            margin + iv * 1.5 + vpadding,
+            margin + ih * 0.5,
+            margin + iv * 2.5 + vpadding,
+            margin + ih + hpadding + c0w * 0.5,
+            margin + iv * 2.5 + vpadding,
+        ]});
+        for (let y = 0; y < 3; y++) {
+            flow.createPath({ points: [
+                margin + ih + hpadding + c0w * 0.5,
+                margin + iv * (y + 0.5) + vpadding,
+                margin + ih * 1.5 + hpadding + c0w,
+                margin + iv * (y + 0.5) + vpadding,
+            ]});
+            flow.createPath({ points: [
+                margin + ih * 1.5 + hpadding + c0w,
+                margin + iv * (y + 0.5) + vpadding,
+                margin + ih * 2 + hpadding * 3 + c0w + c1w * 0.5,
+                margin + iv * (y + 0.5) + vpadding,
+            ]});
+            flow.createPath({ points: [
+                margin + ih * 2 + hpadding * 3 + c0w + c1w * 0.5,
+                margin + iv * (y + 0.5) + vpadding,
+                margin + ih * 2.5 + hpadding * 5 + c0w + c1w,
+                margin + iv * (y + 0.5) + vpadding,
+            ]});
+        }
+        flow.createPath({ points: [
+            margin + ih * 2.5 + hpadding * 5 + c0w + c1w,
+            margin + iv * 0.5 + vpadding,
+            margin + ih * 3.5 + hpadding * 7 + c0w + 2 * c1w,
+            margin + iv * 0.5 + vpadding,
+            margin + ih * 3.5 + hpadding * 7 + c0w + 2 * c1w,
+            margin + iv * 1.5 + vpadding,
+        ]});
+        flow.createPath({ points: [
+            margin + ih * 2.5 + hpadding * 5 + c0w + c1w,
+            margin + iv * 1.5 + vpadding,
+            margin + ih * 3.5 + hpadding * 7 + c0w + 2 * c1w,
+            margin + iv * 1.5 + vpadding,
+        ]});
+        flow.createPath({ points: [
+            margin + ih * 2.5 + hpadding * 5 + c0w + c1w,
+            margin + iv * 2.5 + vpadding,
+            margin + ih * 3.5 + hpadding * 7 + c0w + 2 * c1w,
+            margin + iv * 2.5 + vpadding,
+            margin + ih * 3.5 + hpadding * 7 + c0w + 2 * c1w,
+            margin + iv * 1.5 + vpadding,
+        ]});
+
+        let div = document.querySelector('#source');
+        div.style.left = `${margin}px`;
+        div.style.top = `${margin + iv + vpadding}px`;
+        div.style.width = `${ih}px`;
+        div.style.height = `${iv}px`;
+
+        div = document.querySelector('#result');
+        div.style.left = `${margin + ih * 3 + hpadding * 6 + c0w + 2 * c1w}px`;
+        div.style.top = `${margin + iv + vpadding}px`;
+        div.style.width = `${ih}px`;
+        div.style.height = `${iv}px`;
+
+        for (let y = 0; y < 3; y++) {
+            div = document.querySelector(`#c${y + 1}`);
+            div.style.left = `${margin + ih + c0w + hpadding * 2}px`;
+            div.style.top = `${margin + y * (iv + vpadding)}px`;
+            div.style.width = `${ih}px`;
+            div.style.height = `${iv}px`;
+        }
+
+        for (let y = 0; y < 3; y++) {
+            div = document.querySelector(`#channel${y}`);
+            div.style.left = `${margin + ih + hpadding}px`;
+            div.style.top = `${margin + y * (iv + vpadding)}px`;
+            div.style.width = `${c0w}px`;
+            div.style.height = `${iv}px`;
+        }
+
+        for (let y = 0; y < 3; y++) {
+            div = document.querySelector(`#c${y + 1}m`);
+            div.style.left = `${margin + ih * 2 + c0w + c1w + hpadding * 4}px`;
+            div.style.top = `${margin + y * (iv + vpadding)}px`;
+            div.style.width = `${ih}px`;
+            div.style.height = `${iv}px`;
+        }
+
+        for (let y = 0; y < 3; y++) {
+            div = document.querySelector(`#channel${y}m`);
+            div.style.left = `${margin + ih * 2 + c0w + 3 * hpadding}px`;
+            div.style.top = `${margin + y * (iv + vpadding)}px`;
+            div.style.width = `${c1w}px`;
+            div.style.height = `${iv}px`;
+        }
+
+        for (let y = 0; y < 3; y++) {
+            div = document.querySelector(`#channel${y}n`);
+            div.style.left = `${margin + ih * 3 + c0w + c1w + 5 * hpadding}px`;
+            div.style.top = `${margin + 1.0 * (iv + vpadding) + (y - 1.0) * (iv * 0.9 + vpadding)}px`;
+            div.style.width = `${c1w}px`;
+            div.style.height = `${iv}px`;
+        }
+
+        resizeVisibleCanvases();
+        updateZoomLimits();
+        clampView();
+        layoutCalcStrip(windowWidth, windowHeight, ih, iv, c0w, c1w);
+        renderCalcStrip();
+        scheduleRender();
+    }
+
+    function loadImage(src) {
+        currentImageSrc = src;
+        document.getElementById('base_image').src = src;
+        scheduleHashWrite();
+    }
+
+    function screenToImage(canvas, clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const size = getCanvasDisplaySize(canvas);
+
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+
+        const scale = getEffectiveScale(canvas);
+        const sw = size.w / scale;
+        const sh = size.h / scale;
+        const sx = viewState.cx - sw / 2;
+        const sy = viewState.cy - sh / 2;
+
+        return {
+            x: sx + (x / size.w) * sw,
+            y: sy + (y / size.h) * sh
+        };
+    }
+
+    function zoomAt(canvas, clientX, clientY, zoomFactor) {
+        const before = screenToImage(canvas, clientX, clientY);
+        const newZoom = Math.max(viewState.minZoom, Math.min(viewState.maxZoom, viewState.zoom * zoomFactor));
+        if (newZoom === viewState.zoom) return;
+
+        viewState.zoom = newZoom;
+
+        const rect = canvas.getBoundingClientRect();
+        const size = getCanvasDisplaySize(canvas);
+        const px = clientX - rect.left;
+        const py = clientY - rect.top;
+
+        const scale = getEffectiveScale(canvas);
+        const sw = size.w / scale;
+        const sh = size.h / scale;
+
+        viewState.cx = before.x - ((px / size.w) - 0.5) * sw;
+        viewState.cy = before.y - ((py / size.h) - 0.5) * sh;
+
+        clampView();
+
+        if (canInspectPixels()) {
+            setHoveredPixel(getPixelFromEvent(canvas, clientX, clientY));
+        } else {
+            setHoveredPixel(null);
+        }
+
+        scheduleRender();
+        scheduleHashWrite();
+    }
+
+    function panByScreenDelta(canvas, dx, dy) {
+        const scale = getEffectiveScale(canvas);
+        viewState.cx -= dx / scale;
+        viewState.cy -= dy / scale;
+        clampView();
+        scheduleRender();
+        scheduleHashWrite();
+    }
+
+    function getTwoPointers() {
+        const vals = Array.from(pointers.values());
+        if (vals.length < 2) return null;
+        return [vals[0], vals[1]];
+    }
+
+    function distance(a, b) {
+        const dx = a.clientX - b.clientX;
+        const dy = a.clientY - b.clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function midpoint(a, b) {
+        return {
+            clientX: (a.clientX + b.clientX) / 2,
+            clientY: (a.clientY + b.clientY) / 2
+        };
+    }
+
+    function startGesture(canvas) {
+        const two = getTwoPointers();
+        if (!two) return;
+
+        const [p1, p2] = two;
+        const mid = midpoint(p1, p2);
+        const anchor = screenToImage(canvas, mid.clientX, mid.clientY);
+
+        gesture = {
+            canvas,
+            startDistance: distance(p1, p2),
+            startZoom: viewState.zoom,
+            anchorImageX: anchor.x,
+            anchorImageY: anchor.y
+        };
+    }
+
+    function updateGesture() {
+        if (!gesture) return;
+        const two = getTwoPointers();
+        if (!two) return;
+
+        const [p1, p2] = two;
+        const mid = midpoint(p1, p2);
+        const newDistance = distance(p1, p2);
+        if (gesture.startDistance <= 0) return;
+
+        let newZoom = gesture.startZoom * (newDistance / gesture.startDistance);
+        newZoom = Math.max(viewState.minZoom, Math.min(viewState.maxZoom, newZoom));
+        viewState.zoom = newZoom;
+
+        const canvas = gesture.canvas;
+        const rect = canvas.getBoundingClientRect();
+        const size = getCanvasDisplaySize(canvas);
+        const px = mid.clientX - rect.left;
+        const py = mid.clientY - rect.top;
+        const scale = getEffectiveScale(canvas);
+        const sw = size.w / scale;
+        const sh = size.h / scale;
+
+        viewState.cx = gesture.anchorImageX - ((px / size.w) - 0.5) * sw;
+        viewState.cy = gesture.anchorImageY - ((py / size.h) - 0.5) * sh;
+
+        clampView();
+        scheduleRender();
+        scheduleHashWrite();
+    }
+
+    function attachInteractions(canvas) {
+        canvas.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+            zoomAt(canvas, e.clientX, e.clientY, factor);
+        }, { passive: false });
+
+        canvas.addEventListener('dblclick', function(e) {
+            e.preventDefault();
+            zoomAt(canvas, e.clientX, e.clientY, 2);
+        });
+
+        canvas.addEventListener('pointerdown', function(e) {
+            e.preventDefault();
+            canvas.setPointerCapture(e.pointerId);
+
+            pointers.set(e.pointerId, {
+                pointerId: e.pointerId,
+                clientX: e.clientX,
+                clientY: e.clientY,
+                prevX: e.clientX,
+                prevY: e.clientY,
+                downX: e.clientX,
+                downY: e.clientY,
+                moved: false
+            });
+
+            if (pointers.size === 2) {
+                startGesture(canvas);
+            }
+        });
+
+        canvas.addEventListener('pointermove', function(e) {
+            // hover should work even with no pressed pointer
+            if (canInspectPixels() && pointers.size <= 1) {
+                setHoveredPixel(getPixelFromEvent(canvas, e.clientX, e.clientY));
+            } else if (!canInspectPixels()) {
+                setHoveredPixel(null);
+            }
+
+            if (!pointers.has(e.pointerId)) return;
+
+            const p = pointers.get(e.pointerId);
+            const dx = e.clientX - p.prevX;
+            const dy = e.clientY - p.prevY;
+
+            if (Math.abs(e.clientX - p.downX) > 3 || Math.abs(e.clientY - p.downY) > 3) {
+                p.moved = true;
+            }
+
+            p.clientX = e.clientX;
+            p.clientY = e.clientY;
+            p.prevX = e.clientX;
+            p.prevY = e.clientY;
+            pointers.set(e.pointerId, p);
+
+            if (pointers.size === 1 && p.moved) {
+                panByScreenDelta(canvas, dx, dy);
+            } else if (pointers.size >= 2) {
+                updateGesture();
+            }
+        });
+
+        function endPointer(e) {
+            const p = pointers.get(e.pointerId);
+
+            if (p && !p.moved && pointers.size === 1 && canInspectPixels()) {
+                const pixel = getPixelFromEvent(canvas, e.clientX, e.clientY);
+                if (pixel) {
+                    setSelectedPixel(pixel);
+                    setHoveredPixel(pixel);
+                }
+            }
+
+            pointers.delete(e.pointerId);
+
+            if (pointers.size < 2) {
+                gesture = null;
+            } else {
+                startGesture(canvas);
+            }
+        }
+
+        canvas.addEventListener('pointerup', endPointer);
+        canvas.addEventListener('pointercancel', endPointer);
+
+        canvas.addEventListener('pointerleave', function() {
+            setHoveredPixel(null);
+        });
+    }
+
+    function setupInteractions() {
+        viewIds.forEach(id => {
+            const canvas = document.querySelector(`#${id} canvas`);
+            visibleContexts[id] = canvas.getContext('2d');
+            attachInteractions(canvas);
+        });
+    }
+
+    function buildChannelControls() {
+        const bases = [base1, base2, base3];
+
+        for (let i = 0; i < 3; i++) {
+            const div = document.querySelector(`#channel${i}`);
+            const panel = document.createElement('div');
+            panel.classList.add('channel-panel');
+            div.append(panel);
+
+            for (let k = 0; k < 4; k++) {
+                const isOffset = k === 3;
+                const min = isOffset ? 0 : -1;
+                const max = isOffset ? 128 : 1;
+                const step = isOffset ? 16 : 0.1;
+
+                let holder = document.createElement('div');
+                holder.style.marginBottom = '-7px';
+                holder.style.marginTop = '-7px';
+
+                panel.append(holder);
+                let ticks = isOffset ?
+                    [
+                        { value: 0, major: true },
+                        { value: 16 },
+                        { value: 32, major: true },
+                        { value: 48 },
+                        { value: 64, major: true },
+                        { value: 80 },
+                        { value: 96, major: true },
+                        { value: 112 },
+                        { value: 128, major: true },
+                    ] :
+                    [
+                        { value: -1.0, major: true },
+                        { value: -0.9 },
+                        { value: -0.8 },
+                        { value: -0.7 },
+                        { value: -0.6 },
+                        { value: -0.5, major: true },
+                        { value: -0.4 },
+                        { value: -0.3 },
+                        { value: -0.2 },
+                        { value: -0.1 },
+                        { value: 0, major: true },
+                        { value: 0.1 },
+                        { value: 0.2 },
+                        { value: 0.3 },
+                        { value: 0.4 },
+                        { value: 0.5, major: true },
+                        { value: 0.6 },
+                        { value: 0.7 },
+                        { value: 0.8 },
+                        { value: 0.9 },
+                        { value: 1.0, major: true },
+                    ];
+                knobs.push(new FancyKnob(holder, {
+                    label: ['R', 'G', 'B', 'Bias'][k],
+                    min: min,
+                    max: max,
+                    step: step,
+                    value: bases[i][k],
+                    color: ['#ea2830', '#73d216', '#238acc', '#f2c879'][k],
+                    centerLabel: '0',
+                    size: 70,
+                    horizontal: true,
+                    ticks: ticks,
+                    formatValue: isOffset ? null : (v) => {
+                        return `${Math.trunc(v * 100)}%`;
+                    },
+                    onInput: (v) => {
+                        commitBasisValue(v);
+                    }
+                }));
+
+                function clampBasisValue(rawValue) {
+                    const val = parseFloat(rawValue);
+                    if (Number.isNaN(val)) return null;
+                    return Math.max(min, Math.min(max, val));
+                }
+
+                function commitBasisValue(rawValue) {
+                    const val = clampBasisValue(rawValue);
+                    if (val === null) return;
+
+                    bases[i][k] = val;
+
+                    inverseBasis = null;
+                    updateInverseBasis();
+                    markBasisDirty();
+                    scheduleHashWrite();
+                }
+            }
+        }
+
+        for (let i = 0; i < 3; i++) {
+            function clampBlurValue(rawValue) {
+                const val = parseInt(rawValue, 10);
+                if (Number.isNaN(val)) return null;
+                return Math.max(0, Math.min(16, val));
+            }
+
+            function commitBlurValue(rawValue) {
+                const val = clampBlurValue(rawValue);
+                if (val === null) return;
+
+                channelSettings[i].mode = 'gaussian';
+                channelSettings[i].amount = val;
+
+                markFilterDirty();
+                scheduleHashWrite();
+            }
+
+            function clampLevelValue(rawValue) {
+                const val = parseFloat(rawValue);
+                if (Number.isNaN(val)) return null;
+                return Math.max(0, Math.min(100, val));
+            }
+
+            function commitLevelValue(rawValue) {
+                const val = clampLevelValue(rawValue);
+                if (val === null) return;
+
+                channelLevels[i] = val / 100.0;
+
+                resultDirty = true;
+                displayDirty = true;
+                labelsDirty = true;
+                metricsDirty = true;
+                schedulePipeline();
+                scheduleHashWrite();
+            }
+
+            let div = document.querySelector(`#channel${i}m`);
+            let panel = document.createElement('div');
+            panel.classList.add('channel-panel');
+            div.append(panel);
+
+            // Blur knob
+            let blurHolder = document.createElement('div');
+            // blurHolder.style.marginBottom = '-7px';
+            // blurHolder.style.marginTop = '-7px';
+            panel.append(blurHolder);
+
+            knobs.push(new FancyKnob(blurHolder, {
+                label: 'Blur',
+                min: 0,
+                max: 16,
+                step: 1,
+                value: channelSettings[i].amount,
+                color: '#888888',
+                centerLabel: '0',
+                size: 70,
+                horizontal: false,
+                ticks: [
+                    { value: 0, major: true },
+                    { value: 1 },
+                    { value: 2 },
+                    { value: 3 },
+                    { value: 4, major: true },
+                    { value: 5 },
+                    { value: 6 },
+                    { value: 7 },
+                    { value: 8, major: true },
+                    { value: 9 },
+                    { value: 10 },
+                    { value: 11 },
+                    { value: 12, major: true },
+                    { value: 13 },
+                    { value: 14 },
+                    { value: 15 },
+                    { value: 16, major: true },
+                ],
+                onInput: (v) => {
+                    commitBlurValue(v);
+                }
+            }));
+            blurHolder.querySelector('.knob').style.width = '100%';
+
+            div = document.querySelector(`#channel${i}n`);
+            panel = document.createElement('div');
+            panel.classList.add('channel-panel');
+            div.append(panel);
+
+            // Level knob
+            let levelHolder = document.createElement('div');
+            panel.append(levelHolder);
+
+            knobs.push(new FancyKnob(levelHolder, {
+                label: 'Level',
+                min: 0,
+                max: 100,
+                step: 10,
+                value: channelLevels[i] * 100,
+                color: '#b0b0b0',
+                centerLabel: '0',
+                size: 70,
+                horizontal: false,
+                formatValue: (v) => `${Math.round(v)}%`,
+                ticks: [
+                    { value: 0, major: true },
+                    { value: 10 },
+                    { value: 20 },
+                    { value: 30 },
+                    { value: 40 },
+                    { value: 50, major: true },
+                    { value: 60 },
+                    { value: 70 },
+                    { value: 80 },
+                    { value: 90 },
+                    { value: 100, major: true },
+                ],
+                onInput: (v) => {
+                    commitLevelValue(v);
+                }
+            }));
+            levelHolder.querySelector('.knob').style.width = '100%';
+        }
+    }
+
+    function initBufferContexts() {
+        viewIds.forEach(id => {
+            const opts = id === 'source' ? { willReadFrequently: true } : undefined;
+            bufferContexts[id] = buffers[id].getContext('2d', opts);
+        });
+    }
+
+    function loadCurrentImageIntoPipeline() {
+        const baseImage = document.getElementById('base_image');
+
+        width = baseImage.naturalWidth;
+        height = baseImage.naturalHeight;
+
+        Object.values(buffers).forEach(c => {
+            c.width = width;
+            c.height = height;
+        });
+
+        const ctx = bufferContexts.source;
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(baseImage, 0, 0, width, height);
+
+        sourceImageData = ctx.getImageData(0, 0, width, height);
+        sourcePixels = sourceImageData.data;
+
+        ensureWorkingBuffers();
+        updateInverseBasis();
+
+        decomposeDirty = true;
+        filterDirty = true;
+        resultDirty = true;
+        statsDirty = true;
+        displayDirty = true;
+        labelsDirty = true;
+        metricsDirty = true;
+
+        schedulePipeline();
+        renderCalcStrip();
+
+        if (pendingRestoredView) {
+            viewState.zoom = pendingRestoredView.zoom;
+            viewState.cx = pendingRestoredView.cx;
+            viewState.cy = pendingRestoredView.cy;
+            updateZoomLimits();
+            clampView();
+            renderAll();
+        } else {
+            resetView();
+        }
+    }
+
+    window.addEventListener('resize', handleResize);
+
+    function roundTo(x, digits = 3) {
+        const p = Math.pow(10, digits);
+        return Math.round(x * p) / p;
+    }
+
+    function isFiniteNumber(x) {
+        return typeof x === 'number' && Number.isFinite(x);
+    }
+
+    function isNumberArray(arr, len) {
+        return Array.isArray(arr) && arr.length === len && arr.every(isFiniteNumber);
+    }
+
+    function clampNumber(x, min, max) {
+        return Math.max(min, Math.min(max, x));
+    }
+
+    function getCompactState() {
+        return {
+            v: 1,
+            i: currentImageSrc || '',
+            b: [
+                base1.map(v => roundTo(v, 3)),
+                base2.map(v => roundTo(v, 3)),
+                base3.map(v => roundTo(v, 3))
+            ],
+            f: channelSettings.map(s => s.amount | 0),
+            l: channelLevels.map(v => Math.round(v * 100)),
+            z: roundTo(viewState.zoom, 3),
+            c: [roundTo(viewState.cx, 2), roundTo(viewState.cy, 2)]
+        };
+    }
+
+    function encodeStateToHash() {
+        const json = JSON.stringify(getCompactState());
+        const compressed = LZString.compressToEncodedURIComponent(json);
+        return `s=${compressed}`;
+    }
+
+    function decodeStateFromHash() {
+        const raw = window.location.hash.replace(/^#/, '');
+        if (!raw || !raw.startsWith('s=')) return null;
+
+        try {
+            const compressed = raw.slice(2);
+            const json = LZString.decompressFromEncodedURIComponent(compressed);
+            if (!json) return null;
+
+            const obj = JSON.parse(json);
+            if (!obj || obj.v !== 1) return null;
+            if (!Array.isArray(obj.b) || obj.b.length !== 3) return null;
+            if (!isNumberArray(obj.b[0], 4)) return null;
+            if (!isNumberArray(obj.b[1], 4)) return null;
+            if (!isNumberArray(obj.b[2], 4)) return null;
+            if (!isNumberArray(obj.f, 3)) return null;
+            if (!isNumberArray(obj.l, 3)) return null;
+            if (!isNumberArray(obj.c, 2)) return null;
+            if (!isFiniteNumber(obj.z)) return null;
+            if (typeof obj.i !== 'string') return null;
+
+            return {
+                img: obj.i,
+                b1: [
+                    clampNumber(obj.b[0][0], -1, 1),
+                    clampNumber(obj.b[0][1], -1, 1),
+                    clampNumber(obj.b[0][2], -1, 1),
+                    clampNumber(obj.b[0][3], -128, 128)
+                ],
+                b2: [
+                    clampNumber(obj.b[1][0], -1, 1),
+                    clampNumber(obj.b[1][1], -1, 1),
+                    clampNumber(obj.b[1][2], -1, 1),
+                    clampNumber(obj.b[1][3], -128, 128)
+                ],
+                b3: [
+                    clampNumber(obj.b[2][0], -1, 1),
+                    clampNumber(obj.b[2][1], -1, 1),
+                    clampNumber(obj.b[2][2], -1, 1),
+                    clampNumber(obj.b[2][3], -128, 128)
+                ],
+                f: obj.f.map(v => clampNumber(Math.round(v), 0, 16)),
+                l: obj.l.map(v => clampNumber(Math.round(v), 0, 100)),
+                z: clampNumber(obj.z, 1, 64),
+                cx: obj.c[0],
+                cy: obj.c[1]
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    function writeHashNow() {
+        // if (suppressHashSync || applyingHash) return;
+
+        // const hash = encodeStateToHash();
+        // const newUrl = `${window.location.pathname}${window.location.search}#${hash}`;
+        // history.replaceState(null, '', newUrl);
+    }
+
+    function scheduleHashWrite() {
+        if (suppressHashSync || applyingHash) return;
+
+        clearTimeout(hashWriteTimer);
+        hashWriteTimer = setTimeout(writeHashNow, 180);
+    }
+
+    function applyStateToControls(state) {
+        applyingHash = true;
+        suppressHashSync = true;
+
+        try {
+            knobs[0].setValue(state.b1[0], true);
+            knobs[1].setValue(state.b1[1], true);
+            knobs[2].setValue(state.b1[2], true);
+            knobs[3].setValue(state.b1[3], true);
+
+            knobs[4].setValue(state.b2[0], true);
+            knobs[5].setValue(state.b2[1], true);
+            knobs[6].setValue(state.b2[2], true);
+            knobs[7].setValue(state.b2[3], true);
+
+            knobs[8].setValue(state.b3[0], true);
+            knobs[9].setValue(state.b3[1], true);
+            knobs[10].setValue(state.b3[2], true);
+            knobs[11].setValue(state.b3[3], true);
+
+            knobs[12].setValue(state.f[0], true);
+            knobs[14].setValue(state.f[1], true);
+            knobs[16].setValue(state.f[2], true);
+
+            knobs[13].setValue(state.l[0], true);
+            knobs[15].setValue(state.l[1], true);
+            knobs[17].setValue(state.l[2], true);
+
+            pendingRestoredView = {
+                zoom: state.z,
+                cx: state.cx,
+                cy: state.cy
+            };
+
+            if (state.img) {
+                loadImage(state.img);
+            } else {
+                pendingRestoredView = null;
+            }
+        } finally {
+            applyingHash = false;
+        }
+    }
+
+    function restoreFromHash() {
+        const state = decodeStateFromHash();
+        if (!state) return false;
+
+        applyStateToControls(state);
+        return true;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        document.getElementById('left_panel_open_btn')?.addEventListener('click', openLeftPanel);
+
+        initBufferContexts();
+        handleResize();
+        setupInteractions();
+        buildChannelControls();
+        updateInverseBasis();
+
+        const baseImage = document.getElementById('base_image');
+
+        baseImage.addEventListener('load', function() {
+            loadCurrentImageIntoPipeline();
+            pendingRestoredView = null;
+            suppressHashSync = false;
+            scheduleHashWrite();
+        });
+
+        const images = ['25', '30', '33', '44', '76', '91'];
+
+        const imageChooser = document.querySelector('#gallery');
+        for (const imgSrc of images) {
+            const img = document.createElement('img');
+            img.src = `jpeg/${imgSrc}.jpg`;
+            // img.style.maxHeight = '100%';
+            // img.style.cursor = 'pointer';
+            img.addEventListener('click', function() {
+                loadImage(`jpeg/${imgSrc}.jpg`);
+                closeLeftPanel();
+            });
+            imageChooser.append(img);
+        }
+
+        const restored = restoreFromHash();
+        if (!restored) {
+            const firstImage = imageChooser.querySelector('img');
+            if (firstImage) firstImage.click();
+        }
+
+        window.addEventListener('hashchange', () => {
+            restoreFromHash();
+        });
+
+        document.getElementById('bu_reset_pipeline')?.addEventListener('click', function() {
+            // red channel
+            knobs[0].setValue(1.0, true);
+            knobs[1].setValue(0.0, true);
+            knobs[2].setValue(0.0, true);
+            knobs[3].setValue(0.0, true);
+            // green channel
+            knobs[4].setValue(0.0, true);
+            knobs[5].setValue(1.0, true);
+            knobs[6].setValue(0.0, true);
+            knobs[7].setValue(0.0, true);
+            // blue channel
+            knobs[8].setValue(0.0, true);
+            knobs[9].setValue(0.0, true);
+            knobs[10].setValue(1.0, true);
+            knobs[11].setValue(0.0, true);
+            // blur
+            knobs[12].setValue(0, true);
+            knobs[14].setValue(0, true);
+            knobs[16].setValue(0, true);
+            // level
+            knobs[13].setValue(100, true);
+            knobs[15].setValue(100, true);
+            knobs[17].setValue(100, true);
+
+
+            markBasisDirty();
+            markFilterDirty();
+            schedulePipeline();
+            scheduleHashWrite();
+            closeLeftPanel();
+        });
+
+        document.querySelector('#backdrop')?.addEventListener('click', closeLeftPanel);
+    });
+</script>

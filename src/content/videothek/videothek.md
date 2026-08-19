@@ -8,31 +8,31 @@ image: erd1.webp:0:50
 In diesem Kapitel entwickelst du eine Datenbank für eine Videothek, indem du ein Entity-Relationship-Diagramm erstellst und dieses in eine relationale Datenbank überführst. Anschließend lädst du Beispieldaten in die Datenbank und führst erste Abfragen durch. Das Datenmodell wird anschließend Schritt für Schritt erweitert.
 </p>
 
-Stelle zuerst sicher, dass du keinen Ordner geöffnet hast. Um sicherzugehen, drücke einfach den Shortcut für »Ordner schließen«: <span class='key'>Strg</span><span class='key'>K</span> und dann <span class='key'>F</span>. Dein Workspace sollte jetzt ungefähr so aussehen:
+Stelle zuerst sicher, dass du keinen Ordner geöffnet hast. Um sicherzugehen, drücke einfach den Shortcut für »Ordner schließen«: <kbd>Strg</kbd><kbd>K</kbd> und dann <kbd>F</kbd>. Dein Workspace sollte jetzt ungefähr so aussehen:
 
-<img class='full' src='fresh-start.webp'>
+<img class='full' src='fresh-start.webp' alt=''>
 
 ## Repository klonen
 
-Für diese Anleitung brauchst du ein Repository, das du klonen kannst, indem du auf den blauen Button »Clone Repository« klickst. Gib die folgende URL ein und bestätige mit <span class='key'>Enter</span>:
+Für diese Anleitung brauchst du ein Repository, das du klonen kannst, indem du auf den blauen Button »Clone Repository« klickst. Gib die folgende URL ein und bestätige mit <kbd>Enter</kbd>:
 
 ```bash
 https://github.com/specht/videothek.git
 ```
 
-<img class='full' src='git-clone.webp'>
+<img class='full' src='git-clone.webp' alt=''>
 
-Als nächstes musst du angeben, in welches Verzeichnis du das Repository klonen möchtest. Bestätige den Standardpfad `/workspace/` mit <span class='key'>Enter</span>.
+Als nächstes musst du angeben, in welches Verzeichnis du das Repository klonen möchtest. Bestätige den Standardpfad `/workspace/` mit <kbd>Enter</kbd>.
 
-<img class='full' src='confirm-clone-path.webp'>
+<img class='full' src='confirm-clone-path.webp' alt=''>
 
-Beantworte die Frage »Would you like to open the cloned repository?« mit »Open«.
+Beantworte die Frage »Would you like to open the repository?« mit »Open«.
 
-<img class='full' src='open-yes-no.webp'>
+<img class='full' src='open-yes-no.webp' alt=''>
 
 Du siehst nun auf der linken Seite ein paar Dateien, die wir für dieses Projekt verwenden werden:
 
-<img class='full' src='lets-start.webp'>
+<img class='full' src='lets-start.webp' alt=''>
 
 - die Textdateien enthalten Daten über Filme, Genres und Personen, die wir später in unsere Datenbank importieren werden
 - das Ruby-Skript `import-data.rb` wird verwendet, um die Daten in die Datenbank zu importieren
@@ -40,11 +40,11 @@ Du siehst nun auf der linken Seite ein paar Dateien, die wir für dieses Projekt
 
 Öffne die Datei `genres.txt` und schau dir die Daten an:
 
-<img class='full' src='genres.webp'>
+<img class='full' src='genres.webp' alt=''>
 
 In jeder Zeile siehst du einen Datensatz, der ein Genre beschreibt und im JSON-Format vorliegt. Die Datei `movies.txt` enthält ähnliche Daten, die Filme beschreiben:
 
-<img class='full' src='movies.webp'>
+<img class='full' src='movies.webp' alt=''>
 
 Nehmen wir uns einen Datensatz und schauen ihn formatiert an, so erkennen wir eine Struktur:
 
@@ -100,19 +100,19 @@ Die Daten sind in einem Format, das als JSON bekannt ist. JSON steht für »Java
 
 ## ER-Diagramm zeichnen
 
-Es gibt verschiedene Tools, um ein Entity-Relationship-Diagramm (ERD) zu erstellen. In diesem Tutorial verwenden wir die Erweiterung »ERD Editor« für Visual Studio Code. Um die Erweiterung zu installieren, klicke auf das Erweiterungs-Symbol <img src='../basics/extensions.webp' style='border-radius: 4px; height: 1.5em;'> in der Seitenleiste oder drücke <span class='key'>Strg</span><span class='key'>Shift</span><span class='key'>X</span>. Suche nach der Erweiterung »ERD Editor« und installiere sie.
+Es gibt verschiedene Tools, um ein Entity-Relationship-Diagramm (ERD) zu erstellen. In diesem Tutorial verwenden wir die Erweiterung »ERD Editor« für Visual Studio Code. Um die Erweiterung zu installieren, klicke auf das Erweiterungs-Symbol <img src='../basics/extensions.webp' style='border-radius: 4px; height: 1.5em;' alt=''> in der Seitenleiste oder drücke <kbd>Strg</kbd><kbd>Shift</kbd><kbd>X</kbd>. Suche nach der Erweiterung »ERD Editor« und installiere sie.
 
-<img class='full' src='install-erd-editor.webp'>
+<img class='full' src='install-erd-editor.webp' alt=''>
 
-Erstelle eine neue Datei mit <span class='key'>Strg</span><span class='key'>Alt</span><span class='key'>N</span> und speichere die Datei unter dem Dateinamen `videothek.erd`, indem du <span class='key'>Strg</span><span class='key'>S</span> drückst, den Namen eingibst und mit <span class='key'>Enter</span> bestätigst.
+Erstelle eine neue Datei mit <kbd>Strg</kbd><kbd>Alt</kbd><kbd>N</kbd> und speichere die Datei unter dem Dateinamen `videothek.erd`, indem du <kbd>Strg</kbd><kbd>S</kbd> drückst, den Namen eingibst und mit <kbd>Enter</kbd> bestätigst.
 
-<img class='full' src='choose-filename.webp'>
+<img class='full' src='choose-filename.webp' alt=''>
 
 Die Erweiterung »ERD Editor« erkennt, dass es sich bei der Datei um ein ERD handelt und öffnet den Editor, in dem wir das Diagramm erstellen können.
 
 Erstelle das folgende Diagramm:
 
-<img class='full' src='erd1.webp'>
+<img class='full' src='erd1.webp' alt='Das ER-Diagramm verbindet movie und genre über die Zwischentabelle movie_genre in einer n:m-Beziehung.'>
 
 - Achte darauf, dass Bezeichner für Tabellen und Attribute keine Leerzeichen und Sonderzeichen enthalten (außer den Unterstrich `_`).
 - Achte darauf, dass die Primärschlüssel mit einem gelben Schlüsselsymbol markiert sind.
@@ -125,11 +125,11 @@ Erstelle das folgende Diagramm:
 
 Wenn du fertig bist, kannst du das Diagramm speichern und den SQL-Code exportieren, den wir später verwenden werden, um die Datenbankstruktur zu erstellen. Klicke dazu mit rechts auf den Hintergrund und wähle »Export« / »Schema SQL«.
 
-<img class='full' src='export-schema-sql.webp'>
+<img class='full' src='export-schema-sql.webp' alt=''>
 
-Wähle als Dateinamen `videothek.sql` und bestätige mit <span class='key'>Enter</span>:
+Wähle als Dateinamen `videothek.sql` und bestätige mit <kbd>Enter</kbd>:
 
-<img class='full' src='choose-sql-filename.webp'>
+<img class='full' src='choose-sql-filename.webp' alt=''>
 
 Schau dir die Datei `videothek.sql` an, die den SQL-Code für die Datenbankstruktur enthält:
 
@@ -143,7 +143,7 @@ Um den Code auszuführen, geben wir die Befehle an `mycli`. Öffne dazu ein Term
 mycli < videothek.sql
 ```
 
-<img class='full' src='mycli-create-structure.webp'>
+<img class='full' src='mycli-create-structure.webp' alt=''>
 
 <div class='hint'>
 Falls du eine Fehlermeldung bekommen solltest, dass die Tabellen schon existieren, kannst du deine MySQL-Datenbank im Profil zurücksetzen. Sei aber vorsichtig und schau genau hin, damit du nicht aus Versehen deinen kompletten Workspace zurücksetzt.
@@ -155,7 +155,7 @@ Du kannst nun mit `mycli` überprüfen, ob die Tabellen korrekt erstellt wurden:
 mycli
 ```
 
-<img class='full' src='launch-mycli.webp'>
+<img class='full' src='launch-mycli.webp' alt=''>
 
 Solange du in `mycli` bist, kannst du SQL-Befehle eingeben. Um die Tabellen anzuzeigen, gib folgenden Befehl ein:
 
@@ -164,11 +164,11 @@ Solange du in `mycli` bist, kannst du SQL-Befehle eingeben. Um die Tabellen anzu
 SHOW TABLES;
 ```
 
-<img class='full' src='mycli-show-tables.webp'>
+<img class='full' src='mycli-show-tables.webp' alt=''>
 
 Du siehst, dass die Tabellen existieren, allerdings sind sie noch leer:
 
-<img class='full' src='mycli-empty-tables.webp'>
+<img class='full' src='mycli-empty-tables.webp' alt=''>
 
 ## Daten importieren
 
@@ -182,7 +182,7 @@ gem install mysql2
 
 Wenn alles korrekt funktioniert, sollte deine Ausgabe in etwa so aussehen:
 
-<img class='full' src='gem-install-mysql2.webp'>
+<img class='full' src='gem-install-mysql2.webp' alt=''>
 
 Führe anschließend das Skript `import-data.rb` im Terminal aus:
 
@@ -191,12 +191,12 @@ ruby import-data.rb
 ```
 
 <div class='hint'>
-Falls du eine Fehlermeldung bekommst, in der von einem SQL-Syntaxfehler die Rede ist, befindest du vermutlich noch in <code>mycli</code>. Beende das Programm mit dem Befehl <code>exit</code> (oder drücke einfach <span class='key'>Strg</span><span class='key'>D</span>) und gib den Befehl im Terminal erneut ein.
+Falls du eine Fehlermeldung bekommst, in der von einem SQL-Syntaxfehler die Rede ist, befindest du vermutlich noch in <code>mycli</code>. Beende das Programm mit dem Befehl <code>exit</code> (oder drücke einfach <kbd>Strg</kbd><kbd>D</kbd>) und gib den Befehl im Terminal erneut ein.
 </div>
 
 Du solltest sehen, wie die Genres und Filme nach und nach importiert werden:
 
-<img class='full' src='import-data.webp'>
+<img class='full' src='import-data.webp' alt=''>
 
 Du kannst nun in `mycli` überprüfen, ob die Daten korrekt importiert wurden:
 
@@ -207,7 +207,7 @@ ON movie.id = movie_genre.movie_id AND movie_genre.genre_id = genre.id
 WHERE genre.name = "Animation";
 ```
 
-<img class='full' src='mycli-test.webp'>
+<img class='full' src='mycli-test.webp' alt='Die Testabfrage liefert Titel und Erscheinungsjahre der Animationsfilme.'>
 
 ## Videothek starten
 
@@ -218,7 +218,7 @@ gem install tty
 ```
 Die Installation dauert ein paar Sekunden, und wenn sie erfolgreich abgeschlossen ist, siehst du eine Ausgabe wie diese:
 
-<img class='full' src='gem-install-tty.webp'>
+<img class='full' src='gem-install-tty.webp' alt=''>
 
 Führe anschließend das Skript `videothek.rb` im Terminal aus:
 
@@ -226,21 +226,21 @@ Führe anschließend das Skript `videothek.rb` im Terminal aus:
 ruby videothek.rb
 ```
 
-<img class='full' src='videothek-start.webp'>
+<img class='full' src='videothek-start.webp' alt=''>
 
-Du kannst nun die Pfeiltasten <span class='key'>↑</span> und <span class='key'>↓</span>, die Eingabetaste <span class='key'>Enter</span> und die Escape-Taste <span class='key'>Esc</span> verwenden, um durch die Menüs zu navigieren.
+Du kannst nun die Pfeiltasten <kbd>↑</kbd> und <kbd>↓</kbd>, die Eingabetaste <kbd>Enter</kbd> und die Escape-Taste <kbd>Esc</kbd> verwenden, um durch die Menüs zu navigieren.
 
 <div class='hint'>
-Verwende die <span class='key'>Bild↑</span> und <span class='key'>Bild↓</span>-Tasten, um schneller durch die Menüs zu navigieren.
+Verwende die <kbd>Bild↑</kbd> und <kbd>Bild↓</kbd>-Tasten, um schneller durch die Menüs zu navigieren.
 </div>
 
 Wähle »Genres durchstöbern« und dann »Animation«, um eine Liste der Animationsfilme anzuzeigen:
 
-<img class='full' src='browse-genres.webp'>
+<img class='full' src='browse-genres.webp' alt='Im Konsolenmenü ist das Genre Animation ausgewählt.'>
 
 An dieser Stelle wird das Programm mit einer Fehlermeldung beendet, da der entsprechende Teil noch nicht implementiert ist:
 
-<img class='full' src='fail.webp'>
+<img class='full' src='fail.webp' alt='Das Programm bricht mit „Query was empty“ ab und gibt den Ruby-Aufrufstapel aus.'>
 
 Scrolle ggfs. nach oben, bis du den Anfang der Fehlermeldung siehst. Die komplette Fehlermeldung siehst du hier:
 
@@ -269,7 +269,7 @@ Scrolle ggfs. nach oben, bis du den Anfang der Fehlermeldung siehst. Die komplet
 
 Die erste Zeile gibt dir einen Hinweis darauf, was überhaupt passiert ist. »Query was empty« bedeutet, dass eine leere Anfrage an die Datenbank gesendet wurde. In der Datei `videothek.rb` findest du die fehlerhafte Stelle in Zeile 51:
 
-<img class='full' src='pwoblem.webp'>
+<img class='full' src='pwoblem.webp' alt='In der Methode browse_movies_by_genre ist die Datenbankabfrage in Zeile 51 noch leer.'>
 
 ## Datenbankabfrage implementieren
 
@@ -286,12 +286,12 @@ ON movie.id = movie_genre.movie_id;
 ```
 
 <div class='hint'>
-Die <code>ON</code>-Klausel ist ein wichtiger Bestandteil von <code>JOIN</code>-Anweisungen. Wenn du sie vergisst, wird die Datenbank alle möglichen Kombinationen der Einträge aller beteiligten Tabellen zurückgeben, was zu einem sehr großen Ergebnis – in unserem Fall 16,7 Millionen Einträgen – führen kann. Du wirst merken, dass die Abfrage sehr lange dauert, du kannst die Ausführung mit <span class='key'>Strg</span><span class='key'>C</span> abbrechen.
+Die <code>ON</code>-Klausel ist ein wichtiger Bestandteil von <code>JOIN</code>-Anweisungen. Wenn du sie vergisst, wird die Datenbank alle möglichen Kombinationen der Einträge aller beteiligten Tabellen zurückgeben, was zu einem sehr großen Ergebnis – in unserem Fall 16,7 Millionen Einträgen – führen kann. Du wirst merken, dass die Abfrage sehr lange dauert, du kannst die Ausführung mit <kbd>Strg</kbd><kbd>C</kbd> abbrechen.
 </div>
 
 Wir bekommen nun eine relativ große Tabelle, in der alle Filme mit ihren Genres aufgelistet sind. Ingesamt sind es über 6700 Einträge, obwohl es in unserer Datenbank nur ca. 2500 Filme gibt. Das liegt daran, dass jeder Film mehrere Genres haben kann und deshalb mehrfach durch die gestellte Abfrage zurückgegeben wird.
 
-<img class='full' src='select0.webp'>
+<img class='full' src='select0.webp' alt='Die Verknüpfung von movie und movie_genre liefert über 6700 Zeilen mit allen Spalten.'>
 
 Da wir uns nur für die Spalten `id`, `titel` und `year` interessieren, können wir die Abfrage entsprechend anpassen. Zusätzlich zur ID des Films interessiert uns auch die ID des Genres, um später die Filme nach Genres filtern zu können:
 
@@ -303,7 +303,7 @@ ON movie.id = movie_genre.movie_id;
 
 Wir erhalten nun eine Tabelle mit weniger Spalten (jedoch genauso vielen Zeilen):
 
-<img class='full' src='select1.webp'>
+<img class='full' src='select1.webp' alt='Das Abfrageergebnis ist auf Film-ID, Genre-ID, Titel und Jahr beschränkt.'>
 
 Um die Abfrage weiter einzuschränken, werden wir die `WHERE`-Klausel verwenden, um nur die Filme auszugeben, die zum Genre »Animation« gehören (dieses Genre hat in unserer Datenbank die ID 13):
 
@@ -316,7 +316,7 @@ WHERE genre_id = 13;
 
 Wir erhalten nun eine Auflistung von Animationsfilmen:
 
-<img class='full' src='select2.webp'>
+<img class='full' src='select2.webp' alt='Der Filter auf Genre-ID 13 liefert nur Animationsfilme.'>
 
 Da die Filme nach Titel und Jahr sortiert zurückgegeben werden sollen, fügen wir eine `ORDER BY`-Klausel hinzu:
 
@@ -332,11 +332,11 @@ ORDER BY title, year;
 Da uns die Genre-ID nur für die Auswahl der Filme benötigt wurde und uns nicht weiter interessiert, können wir sie aus der Abfrage entfernen.
 </div>
 
-<img class='full' src='select3.webp'>
+<img class='full' src='select3.webp' alt='Die Animationsfilme sind nach Titel und Erscheinungsjahr sortiert.'>
 
 Unsere Abfrage ist nun also fertig und wir können sie in unser Ruby-Programm einfügen. Öffne dazu die Datei `videothek.rb` und ändere den Code in Zeile 51 wie folgt:
 
-<img class='full' src='new-code.webp'>
+<img class='full' src='new-code.webp' alt=''>
 
 - Die gewünschte Genre-ID wird als Parameter `genre_id` in Z. 47 übergeben und in Z. 55 mit Hilfe von String Interpolation (zwischen `#{` und `}`) in die Abfrage eingefügt.
 - Um das SQL-Statement besser lesbar zu machen, wird es auf mehrere Zeilen aufgeteilt (Z. 51 bis 57). Dazu wird der Beginn eines mehrzeiligen Strings mit `<<~SQL` markiert und mit `SQL` beendet (anstelle von `SQL` könnten wir auch jeden anderen Bezeichner wählen).
@@ -350,11 +350,11 @@ ruby videothek.rb
 
 Unsere Codeänderung hat funktioniert und wir können nun die Animationsfilme durchstöbern:
 
-<img class='full' src='its-working-omg.webp'>
+<img class='full' src='its-working-omg.webp' alt='Das reparierte Programm zeigt eine durchsuchbare Liste von Animationsfilmen.'>
 
 Wählen wir einen Film, so bekommen wir weitere Informationen angezeigt:
 
-<img class='full' src='still-working.webp'>
+<img class='full' src='still-working.webp' alt='Die Detailansicht zeigt Titel, Jahr, Laufzeit und Bewertung eines ausgewählten Films.'>
 
 ## Videothek erweitern
 
@@ -369,7 +369,7 @@ Versuche, die Videothek zu erweitern, indem du weitere Funktionen hinzufügst:
 
 Wenn du diese Funktionen implementiert hast, kannst du dein Datenmodell um an den Filmen beteiligte Personen erweitern. Dazu musst du die Tabellen `crew`, `movie_crew` und `job` hinzufügen und die Beziehungen zwischen den Tabellen definieren:
 
-<img class='full' src='extended-erd.webp'>
+<img class='full' src='extended-erd.webp' alt='Das erweiterte ER-Diagramm verbindet Filme über movie_crew mit Personen und ihren Tätigkeiten.'>
 
 <div class='hint'>
 In der Tabelle <code>movie_crew</code> werden diesmal drei Tabellen miteinander verbunden. Alle drei Fremdschlüssel sind gleichzeitig Primärschlüssel, da sie zusammen eindeutig sind, weil eine Person in einem Film mehrere Jobs haben kann.

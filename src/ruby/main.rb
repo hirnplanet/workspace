@@ -1,5 +1,12 @@
 require './include/helper.rb'
 require './include/automatron.rb'
+require './include/atomic_file.rb'
+require './include/authentication.rb'
+require './include/database_provisioning.rb'
+require './include/trusted_template.rb'
+require './include/tutorial_screenshots.rb'
+require './include/workspace_credentials.rb'
+require './include/workspace_runtime.rb'
 require 'base64'
 require 'cgi'
 require 'digest'
@@ -12,26 +19,26 @@ require 'open3'
 require 'redcarpet'
 require 'rouge'
 require 'securerandom'
+require 'shellwords'
 require 'set'
 require 'sinatra/base'
 require 'sinatra/cookies'
 
 require './credentials.rb'
 
-Neo4jBolt.bolt_host = 'neo4j'
+Neo4jBolt.bolt_host = 'neo4japp'
 Neo4jBolt.bolt_port = 7687
 
-Faye::WebSocket.load_adapter('thin')
-
 CACHE_BUSTER = SecureRandom.alphanumeric(12)
+RUBOCOP_LAYOUT_CONFIG_PATH = "/tmp/rubocop_layout.yml"
 
-MODULE_ORDER = [:workspace, :phpmyadmin, :pgadmin, :neo4j, :tic80]
+MODULE_ORDER = [:workspace, :codebites, :phpmyadmin, :neo4j, :tic80]
 MODULE_LABELS = {
-    :workspace => 'Workspace',
+    :workspace  => 'Workspace',
+    :codebites  => 'Code Bites',
     :phpmyadmin => 'phpMyAdmin',
-    :pgadmin => 'pgAdmin',
-    :neo4j => 'Neo4j',
-    :tic80 => 'TIC-80',
+    :neo4j      => 'Neo4j',
+    :tic80      => 'TIC-80',
 }
 
 class Neo4jGlobal
@@ -143,6 +150,13 @@ class Main < Sinatra::Base
     include Neo4jBolt
     helpers Sinatra::Cookies
 
+    set :host_authorization, {
+        :permitted_hosts => [
+            WEBSITE_HOST.split(':').first,
+            ".#{WEBSITE_HOST.split(':').first}",
+        ],
+    }
+
     helpers do
         def svg_from_dot(dot_str)
             # Use Graphviz 'dot' from PATH to turn DOT into SVG (no temp files needed).
@@ -158,6 +172,36 @@ class Main < Sinatra::Base
             halt 400, { error: "regex must be a non-empty string" }.to_json if str.nil? || str.strip.empty?
             halt 413, { error: "regex too long" }.to_json if str.length > 2000
             str
+        end
+
+        def rubocop_format_ruby(code)
+            Tempfile.create(["codebite", ".rb"]) do |f|
+                f.write(code)
+                f.flush
+
+                cmd = [
+                    "rubocop",
+                    "--server",
+                    "--config", RUBOCOP_LAYOUT_CONFIG_PATH,
+                    "--only", "Layout",
+                    "-x",               # layout-only autocorrect
+                    f.path
+                ]
+
+                _out, err, status = Open3.capture3(*cmd)
+
+                unless status.success?
+                    # fallback without server
+                    cmd.delete("--server")
+                    _out2, err2, status2 = Open3.capture3(*cmd)
+                    unless status2.success?
+                        STDERR.puts "RuboCop failed: #{err}\n#{err2}"
+                        return code
+                    end
+                end
+
+                File.read(f.path)
+            end
         end
     end
 
@@ -185,29 +229,342 @@ class Main < Sinatra::Base
         Main.server_sid_for_email(email)
     end
 
+    # Shell/Docker command timeouts.
+    #
+    # All values are seconds and can be overridden through environment variables:
+    #   HS_TIMEOUT_DEFAULT
+    #   HS_TIMEOUT_DOCKER_INSPECT
+    #   HS_TIMEOUT_DOCKER_NETWORK_INSPECT
+    #   HS_TIMEOUT_NGINX_RELOAD
+    #   HS_TIMEOUT_CHOWN
+    #   HS_TIMEOUT_TAR
+    #   HS_TIMEOUT_DOCKER_RUN
+    #   HS_TIMEOUT_DOCKER_KILL
+    #
+    # The default values are intentionally conservative. They prevent a wedged
+    # Docker/chown/tar command from blocking a Sinatra request forever, while
+    # still allowing slow first starts to finish normally.
+    def self.timeout_seconds(env_name, default)
+        value = ENV[env_name]
+        return default if value.nil? || value.strip.empty?
+        Integer(value)
+    rescue
+        STDERR.puts ">>> Invalid #{env_name}=#{value.inspect}; using #{default}s"
+        default
+    end
+
+    SHELL_TIMEOUTS = {
+        :default => timeout_seconds('HS_TIMEOUT_DEFAULT', 30),
+        :docker_inspect => timeout_seconds('HS_TIMEOUT_DOCKER_INSPECT', 10),
+        :docker_network_inspect => timeout_seconds('HS_TIMEOUT_DOCKER_NETWORK_INSPECT', 10),
+        :nginx_reload => timeout_seconds('HS_TIMEOUT_NGINX_RELOAD', 10),
+        :chown => timeout_seconds('HS_TIMEOUT_CHOWN', 120),
+        :tar => timeout_seconds('HS_TIMEOUT_TAR', 60),
+        :docker_run => timeout_seconds('HS_TIMEOUT_DOCKER_RUN', 60),
+        :docker_kill => timeout_seconds('HS_TIMEOUT_DOCKER_KILL', 10),
+    }
+
+    def self.shell_timeout(name = :default)
+        SHELL_TIMEOUTS.fetch(name, SHELL_TIMEOUTS[:default])
+    end
+
+    def shell_timeout(name = :default)
+        Main.shell_timeout(name)
+    end
+
+    # Run a shell command with a hard timeout. We keep shell strings here because
+    # the existing code already builds commands that rely on shell syntax and
+    # environment interpolation.
+    def self.shell_capture(command, timeout: nil, allow_failure: false, log_command: true)
+        timeout ||= shell_timeout(:default)
+        timeout = Integer(timeout)
+
+        t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        # STDERR.puts ">>> CMD BEGIN timeout=#{timeout}s: #{command}" if log_command
+
+        stdout_data = ''
+        stderr_data = ''
+        status = nil
+        timed_out = false
+
+        Open3.popen3(command, :pgroup => true) do |stdin, stdout, stderr, wait_thr|
+            stdin.close
+
+            stdout_thread = Thread.new { stdout.read }
+            stderr_thread = Thread.new { stderr.read }
+
+            unless wait_thr.join(timeout)
+                timed_out = true
+                begin
+                    Process.kill('TERM', -wait_thr.pid)
+                rescue
+                    begin
+                        Process.kill('TERM', wait_thr.pid)
+                    rescue
+                    end
+                end
+
+                sleep 1
+
+                if wait_thr.alive?
+                    begin
+                        Process.kill('KILL', -wait_thr.pid)
+                    rescue
+                        begin
+                            Process.kill('KILL', wait_thr.pid)
+                        rescue
+                        end
+                    end
+                end
+
+                wait_thr.join(1)
+            end
+
+            status = wait_thr.value unless wait_thr.alive?
+
+            if stdout_thread.join(1)
+                stdout_data = stdout_thread.value rescue ''
+            else
+                stdout_thread.kill rescue nil
+            end
+
+            if stderr_thread.join(1)
+                stderr_data = stderr_thread.value rescue ''
+            else
+                stderr_thread.kill rescue nil
+            end
+        end
+
+        dt = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+
+        if timed_out
+            STDERR.puts ">>> CMD TIMEOUT after #{format('%.3f', dt)}s: #{command}"
+            raise "Command timed out after #{timeout}s: #{command}"
+        end
+
+        unless allow_failure || (status && status.success?)
+            STDERR.puts ">>> CMD ERROR after #{format('%.3f', dt)}s status=#{status&.exitstatus}: #{command}"
+            raise "Command failed with status #{status&.exitstatus}: #{command}\n#{stderr_data}"
+        end
+
+        # STDERR.puts ">>> CMD END after #{format('%.3f', dt)}s status=#{status&.exitstatus}: #{command}" if log_command
+        stdout_data
+    end
+
+    def self.shell_ok(command, timeout: nil, allow_failure: false)
+        shell_capture(command, :timeout => timeout, :allow_failure => allow_failure)
+        true
+    end
+
+    def shell_capture(command, timeout: nil, allow_failure: false)
+        Main.shell_capture(command, :timeout => timeout, :allow_failure => allow_failure)
+    end
+
+    def shell_ok(command, timeout: nil, allow_failure: false)
+        Main.shell_ok(command, :timeout => timeout, :allow_failure => allow_failure)
+    end
+
+    def self.workspace_runtime
+        @workspace_runtime ||= WorkspaceRuntime::DirectDocker.new(
+            :capture => lambda { |command, **options| Main.shell_capture(command, **options) },
+            :ok => lambda { |command, **options| Main.shell_ok(command, **options) },
+        )
+    end
+
+    def workspace_runtime
+        Main.workspace_runtime
+    end
+
+    # Background queue for workspace launches. This keeps long-running Docker,
+    # chown, tar, and nginx-refresh work out of request handlers while still
+    # deduplicating repeated launch clicks for the same workspace.
+    def self.server_start_key(email, test_tag = nil)
+        fs_tag_for_email("#{email}#{test_tag}")
+    end
+
+    def self.server_start_wait_seconds
+        value = ENV['HS_SERVER_START_WAIT_SECONDS']
+        return 2.0 if value.nil? || value.strip.empty?
+        Float(value)
+    rescue
+        STDERR.puts ">>> Invalid HS_SERVER_START_WAIT_SECONDS=#{value.inspect}; using 2.0s"
+        2.0
+    end
+
+    def self.server_start_job_keep_seconds
+        value = ENV['HS_SERVER_START_JOB_KEEP_SECONDS']
+        return 3600 if value.nil? || value.strip.empty?
+        Integer(value)
+    rescue
+        STDERR.puts ">>> Invalid HS_SERVER_START_JOB_KEEP_SECONDS=#{value.inspect}; using 3600s"
+        3600
+    end
+
+    def self.ensure_server_start_queue!
+        @@server_start_queue = Queue.new unless defined?(@@server_start_queue) && @@server_start_queue
+        @@server_start_mutex = Mutex.new unless defined?(@@server_start_mutex) && @@server_start_mutex
+        @@server_start_jobs = {} unless defined?(@@server_start_jobs) && @@server_start_jobs
+    end
+
+    def self.prune_server_start_jobs_locked!
+        cutoff = Time.now - server_start_job_keep_seconds
+        @@server_start_jobs.delete_if do |_key, job|
+            job[:finished_at] && job[:finished_at] < cutoff
+        end
+    end
+
+    def self.server_start_snapshot(job)
+        return { :status => 'unknown' } unless job
+
+        {
+            :key => job[:key],
+            :email => job[:email],
+            :test_tag => job[:test_tag],
+            :server_tag => job[:server_tag],
+            :status => job[:status],
+            :queued_at => job[:queued_at]&.to_i,
+            :started_at => job[:started_at]&.to_i,
+            :finished_at => job[:finished_at]&.to_i,
+            :error => job[:error],
+        }
+    end
+
+    def self.server_start_status(key)
+        ensure_server_start_queue!
+
+        @@server_start_mutex.synchronize do
+            server_start_snapshot(@@server_start_jobs[key] || { :key => key, :status => 'unknown' })
+        end
+    end
+
+    def self.enqueue_server_start(email:, test_tag:, server_tag:, refresh_nginx_after: false, &block)
+        raise 'enqueue_server_start requires a block' unless block_given?
+
+        ensure_server_start_queue!
+        key = server_start_key(email, test_tag)
+
+        @@server_start_mutex.synchronize do
+            prune_server_start_jobs_locked!
+
+            existing = @@server_start_jobs[key]
+            if existing && ['queued', 'running'].include?(existing[:status])
+                STDERR.puts ">>> Server start already #{existing[:status]}: #{key}"
+                return existing
+            end
+
+            job = {
+                :key => key,
+                :email => email,
+                :test_tag => test_tag,
+                :server_tag => server_tag,
+                :status => 'queued',
+                :queued_at => Time.now,
+                :started_at => nil,
+                :finished_at => nil,
+                :error => nil,
+                :refresh_nginx_after => refresh_nginx_after,
+                :runner => block,
+            }
+
+            @@server_start_jobs[key] = job
+            @@server_start_queue << job
+            STDERR.puts ">>> Server start queued: #{key} email=#{email} test_tag=#{test_tag.inspect}"
+            job
+        end
+    end
+
+    def self.wait_for_server_start_job(job, max_seconds: server_start_wait_seconds)
+        deadline = Time.now + max_seconds.to_f
+
+        loop do
+            snapshot = server_start_status(job[:key])
+            return snapshot unless ['queued', 'running'].include?(snapshot[:status])
+            return snapshot if Time.now >= deadline
+            sleep 0.05
+        end
+    end
+
+    def self.server_start_worker_loop
+        ensure_server_start_queue!
+
+        loop do
+            job = @@server_start_queue.pop
+
+            @@server_start_mutex.synchronize do
+                job[:status] = 'running'
+                job[:started_at] = Time.now
+                job[:error] = nil
+            end
+
+            begin
+                STDERR.puts ">>> Server start worker: starting #{job[:key]}"
+                job[:runner].call
+
+                if job[:refresh_nginx_after]
+                    STDERR.puts ">>> Server start worker: refresh nginx after #{job[:key]}"
+                    Main.refresh_nginx_config()
+                end
+
+                @@server_start_mutex.synchronize do
+                    job[:status] = 'ready'
+                    job[:finished_at] = Time.now
+                end
+                STDERR.puts ">>> Server start worker: ready #{job[:key]}"
+            rescue => e
+                @@server_start_mutex.synchronize do
+                    job[:status] = 'failed'
+                    job[:finished_at] = Time.now
+                    job[:error] = "#{e.class}: #{e.message}"
+                end
+                STDERR.puts ">>> Server start worker failed for #{job[:key]}: #{e.class}: #{e.message}"
+                STDERR.puts e.backtrace.join("\n")
+            ensure
+                job.delete(:runner)
+            end
+        end
+    end
+
+    require './include/live_apps.rb'
+
+    def workspace_url()
+        if user_logged_in?
+            server_tag = @session_user[:server_tag]
+            user_with_test = neo4j_query_expect_one(<<~END_OF_QUERY, {:email => @session_user[:email]})
+                MATCH (u:User {email: $email})
+                OPTIONAL MATCH (u)-[:TAKES]->(t:Test {running: TRUE})
+                RETURN u, t;
+            END_OF_QUERY
+            server_tag = "#{server_tag}#{(user_with_test['t'] || {})[:tag]}"
+            "http://#{server_tag}.#{WEBSITE_HOST}/"
+        else
+            ''
+        end
+    end
+
+    @@nginx_config_mutex = Mutex.new
+
     def self.refresh_nginx_config
+        @@nginx_config_mutex.synchronize do
+            refresh_nginx_config_locked
+        end
+    end
+
+    def self.refresh_nginx_config_locked
         STDERR.puts ">>> Refreshing nginx config..."
         running_servers = {}
-        inspect = JSON.parse(`docker network inspect bridge`)
-        inspect.first['Containers'].values.each do |container|
-            name = container['Name']
-            next unless name[0, 8] == 'hs_code_'
-            fs_tag = name.sub('hs_code_', '')
-            ip = container['IPv4Address'].split('/').first
+        workspace_runtime.running_workspaces(
+            :timeout => shell_timeout(:docker_network_inspect),
+        ).each_pair do |fs_tag, workspace|
             running_servers[fs_tag] = {
-                :ip => ip,
+                :ip => workspace[:ip],
+                :server_sid => nil,
+                :server_tag => nil,
+                :share_tag => nil,
+                :watch_tags => {}, # watch_tag => server_id of watcher
+                :live_apps => {},  # live share tag => port
             }
         end
-        STDERR.puts ">>> Got running servers: #{running_servers.to_json}"
 
-        # $neo4j.neo4j_query(<<~END_OF_QUERY, {:ts => Time.now.to_i})
-        #     MATCH (u:User)
-        #     WHERE u.temp_server_sid_for_pgadmin_expires <= $ts
-        #     REMOVE u.temp_server_sid_for_pgadmin_expires;
-        # END_OF_QUERY
-        # emails_and_server_tags = $neo4j.neo4j_query(<<~END_OF_QUERY).to_a.map { |x| [x['u.email'], x['u.server_sid']] }
-        #     MATCH (u:User) WHERE u.temp_server_sid_for_pgadmin_expires IS NOT NULL RETURN u.email, u.server_sid;
-        # END_OF_QUERY
         emails_and_server_tags = []
 
         # STDERR.puts "Got #{emails_and_server_tags.size} emails and server tags: #{emails_and_server_tags.to_yaml}"
@@ -228,8 +585,6 @@ class Main < Sinatra::Base
 
         STDERR.puts ">>> Creating nginx config..."
 
-        sid_ip_pairs = []
-
         users.each do |row|
             user = row['u']
             test = row['t']
@@ -237,35 +592,62 @@ class Main < Sinatra::Base
             server_tag = "#{user[:server_tag]}#{(test || {})[:tag]}"
             fs_tag = fs_tag_for_email(email_with_test_tag)
             if running_servers.include?(fs_tag)
-                sid_ip_pairs << "#{user[:server_sid]} #{running_servers[fs_tag][:ip]}:8443;"
+                # sid_ip_pairs << "#{user[:server_sid]} #{running_servers[fs_tag][:ip]}:8443;"
+                running_servers[fs_tag][:server_sid] = user[:server_sid]
+                running_servers[fs_tag][:server_tag] = server_tag
+                running_servers[fs_tag][:share_tag] = user[:share_tag]
             end
         end
-        STDERR.puts "sid_ip_pairs:"
-        STDERR.puts sid_ip_pairs.join("\n")
+        # STDERR.puts "sid_ip_pairs:"
+        # STDERR.puts sid_ip_pairs.join("\n")
 
-        watch_tag_ip_pairs = []
+        # watch_tag_ip_pairs = []
 
         $neo4j.neo4j_query(<<~END_OF_QUERY).each do |row|
-            MATCH (:User)-[r:WATCHING]->(u:User)
-            RETURN r.watch_tag, u;
+            MATCH (w:User)-[r:WATCHING]->(u:User)
+            RETURN r.watch_tag, u, w;
         END_OF_QUERY
             watch_tag = row['r.watch_tag']
             user = row['u']
+            watcher = row['w']
             fs_tag = fs_tag_for_email(user[:email])
             if running_servers.include?(fs_tag)
-                watch_tag_ip_pairs << "#{watch_tag} #{running_servers[fs_tag][:ip]}:8443;"
+                # watch_tag_ip_pairs << "#{watch_tag} #{running_servers[fs_tag][:ip]}:8443;"
+                running_servers[fs_tag][:watch_tags][watch_tag] = watcher[:server_sid]
             end
         end
 
-        STDERR.puts "watch_tag_ip_pairs:"
-        STDERR.puts watch_tag_ip_pairs.join("\n")
+        $neo4j.neo4j_query(<<~END_OF_QUERY).each do |row|
+            MATCH (u:User)-[:SHARES_LIVE_APP]->(s:LiveAppShare {active: TRUE})
+            RETURN u.email, s.port, s.tag;
+        END_OF_QUERY
+            fs_tag = fs_tag_for_email(row['u.email'])
+            next unless running_servers.include?(fs_tag)
+            running_servers[fs_tag][:live_apps][row['s.tag']] = row['s.port'].to_i
+        end
 
-        nginx_config_first_part = <<~END_OF_STRING
-            log_format custom '$http_x_forwarded_for - $remote_user [$time_local] "$request" '
-                            '$status $body_bytes_sent "$http_referer" '
-                            '"$http_user_agent" "$request_time"';
+        # STDERR.puts ">>> Got running servers: #{running_servers.to_yaml}"
+
+        # STDERR.puts "watch_tag_ip_pairs:"
+        # STDERR.puts watch_tag_ip_pairs.join("\n")
+
+        nginx_config = <<~END_OF_STRING
+            #log_format custom '$host $http_x_forwarded_proto $remote_addr - $remote_user [$time_local] "$request" '
+            #                '$status $body_bytes_sent "$http_referer" '
+            #                '"$http_user_agent" "$request_time"';
 
             map_hash_bucket_size 128;
+
+            # Keep access logs useful without recording capability tokens, session
+            # cookies, workspace tags or one-time login URLs.
+            map $uri $hs_log_uri {
+                default $uri;
+                ~^/w/[a-z0-9]+(?:/|$) /w/[redacted];
+                ~^/share/[a-z0-9]+(?:/|$) /share/[redacted];
+                ~^/l/[a-z0-9]+(?:/|$) /l/[redacted];
+            }
+
+            log_format custom 'method=$request_method uri=$hs_log_uri status=$status share=$hs_is_share allowed=$hs_allowed';
 
             map $sent_http_content_type $expires {
                 default                         off;
@@ -280,68 +662,113 @@ class Main < Sinatra::Base
                 application/font-woff2          max;
             }
 
-            # Map session cookie -> target upstream (regenerate when sessions change)
-            # You can generate this map block when a workspace starts/stops.
-            map $cookie_hs_server_sid $workspace_upstream {
-                default "";
-                #{sid_ip_pairs.join("\n")}
-            }
-            map $cookie_hs_watch_tag $workspace_upstream_watch {
-                default "";
-                #{watch_tag_ip_pairs.join("\n")}
-            }
-
-            # Proper Upgrade header for WebSockets
             map $http_upgrade $connection_upgrade {
                 default upgrade;
                 ''      close;
             }
 
-            # map $cookie_hs_server_sid $pgadmin_user {
-            #    default "";
-            #    #{emails_and_server_tags.map { |x| "\"#{x[1]}\" \"#{x[0]}\";" }.join("\n")}
-            # }
+            # code-server HTML must arrive uncompressed so sub_filter can inject
+            # the webfont stylesheet. Keep gzip for JS/CSS/other assets.
+            map $http_accept $hs_code_accept_encoding {
+                default gzip;
+                ~*text/html "";
+            }
 
-            # code.workspace.hackschule.de – route by session cookie
-            server {
-                listen 80;
-                server_name code.#{WEBSITE_HOST};
+            # ---------------------------
+            # Workspace token extraction
+            # ---------------------------
 
-                # gzip/expires/etc as you like…
+            # Extract token from /w/<token>/...
+            map $uri $w_token {
+                default "";
+                ~^/w/(?<t>[a-z0-9]+)(?:/|$) $t;
+            }
 
-                location / {
-                    if ($workspace_upstream = "") { return 403; }
+            # Extract token from <token>.#{WEBSITE_HOST.split(':').first}
+            map $host $host_token {
+                default "";
+                ~^(?<t>[a-z0-9]+)\\.#{WEBSITE_HOST.split(':').first.gsub('.', '\\.')} $t;
+            }
 
-                    proxy_set_header Host $http_host;
-                    proxy_set_header Upgrade $http_upgrade;
-                    proxy_set_header Connection upgrade;
-                    proxy_set_header Accept-Encoding gzip;
-                    proxy_pass http://$workspace_upstream;
-                }
+            # Effective token: prefer subdomain token, else /w/ token
+            map "$host_token:$w_token" $hs_token {
+                default $w_token;
+                ~^(?<t>[^:]+): $t;
+            }
+
+            # Token -> upstream
+            map $hs_token $hs_upstream {
+                default "";
+                #{running_servers.map { |fs_tag, info| if info[:server_tag] then "#{info[:server_tag]} http://#{info[:ip]}:8443;" else nil end}.compact.join("\n    ")}
+                #{running_servers.map { |fs_tag, info| if info[:server_tag] then info[:watch_tags].map { |watch_tag, server_sid| "#{watch_tag} http://#{info[:ip]}:8443;" }.flatten.compact.join("\n    ") else nil end}.compact.join("\n    ")}
+                #{running_servers.map { |fs_tag, info| if info[:share_tag] then "#{info[:share_tag]} http://#{info[:ip]}:8443;" else nil end}.compact.join("\n    ")}
+            }
+
+            # Token -> share flag (explicit allowlist)
+            map $hs_token $hs_is_share {
+                default 0;
+                #{running_servers.map { |fs_tag, info| if info[:share_tag] then "#{info[:share_tag]} 1;" else nil end}.compact.join("\n    ")}
+            }
+
+            # Token -> required SID
+            map $hs_token $hs_required_sid {
+                default "";
+                #{running_servers.map { |fs_tag, info| if info[:server_sid] then "#{info[:server_tag]} #{info[:server_sid]};" else nil end}.compact.join("\n    ")}
+                #{running_servers.map { |fs_tag, info| if info[:server_tag] then info[:watch_tags].map { |watch_tag, server_sid | "#{watch_tag} #{server_sid};" }.flatten.compact.join("\n    ") else nil end}.compact.join("\n    ")}
+            }
+
+            # Shared live apps: stable tag -> workspace proxy + port
+            map $host $hs_live_tag {
+                default "";
+                ~^live-(?<lt>[a-z0-9]+)\.#{WEBSITE_HOST.split(':').first.gsub('.', '\\.')}$ $lt;
+            }
+
+            map $hs_live_tag $hs_live_upstream {
+                default "";
+                #{running_servers.map { |_fs_tag, info| info[:live_apps].map { |tag, _port| "#{tag} http://#{info[:ip]}:8443;" } }.flatten.join("\n    ")}
+            }
+
+            map $hs_live_tag $hs_live_port {
+                default "";
+                #{running_servers.map { |_fs_tag, info| info[:live_apps].map { |tag, port| "#{tag} #{port};" } }.flatten.join("\n    ")}
+            }
+
+            map $hs_live_upstream $hs_live_no_upstream {
+                ""      1;
+                default 0;
+            }
+
+            # deny if upstream missing
+            map $hs_upstream $hs_no_upstream {
+                ""      1;
+                default 0;
+            }
+
+            # deny if token is private but required SID missing (fail closed)
+            map "$hs_is_share:$hs_required_sid" $hs_private_missing_sid {
+                default 0;
+                "0:"    1;
+            }
+
+            # Allowed if:
+            # - share token, OR
+            # - cookie SID matches required SID
+            map "$hs_is_share:$cookie_hs_server_sid:$hs_required_sid" $hs_allowed {
+                default 0;
+
+                # Share token => allow regardless of cookie
+                ~^1: 1;
+
+                # Private token => cookie must equal required sid
+                ~^0:(?<sid>[^:]+):\\k<sid>$ 1;
             }
 
             server {
                 listen 80;
-                server_name watch.#{WEBSITE_HOST};
-
-                # gzip/expires/etc as you like…
-
-                location / {
-                    if ($workspace_upstream_watch = "") { return 403; }
-
-                    proxy_set_header Host $http_host;
-                    proxy_set_header Upgrade $http_upgrade;
-                    proxy_set_header Connection upgrade;
-                    proxy_set_header Accept-Encoding gzip;
-                    proxy_pass http://$workspace_upstream_watch;
-                }
-            }
-
-            server {
-                listen 80;
-                server_name #{WEBSITE_HOST};
+                server_name #{WEBSITE_HOST.split(':').first};
                 client_max_body_size 100M;
                 expires $expires;
+                add_header Permissions-Policy "local-fonts=()" always;
 
                 gzip on;
                 gzip_comp_level 6;
@@ -362,157 +789,277 @@ class Main < Sinatra::Base
                     image/svg+xml;
 
                 access_log /var/log/nginx/access.log custom;
-
                 charset utf-8;
+
+                location = /cache { return 301 /cache/; }
+                location ^~ /cache/ { alias /webcache/; }
+
+                location = /brand { return 301 /brand/; }
+                location ^~ /brand/ { alias /brand/; }
+
+                location = /dl { return 301 /dl/; }
+                location ^~ /dl/ { alias /dl/; }
 
                 location / {
                     root /usr/share/nginx/html;
-                    include /etc/nginx/mime.types;
-
-                    #{users.map { |row| user = row['u']; server_tag = user[:server_tag]; fs_tag = fs_tag_for_email(user[:email]); running_servers.include?(fs_tag) ? "if ($http_referer ~* \"/#{server_tag}/proxy/([0-9]{4})/\") { set $port $1; set $new_url_#{server_tag} \"/#{server_tag}/proxy/$port$request_uri\"; } if ($new_url_#{server_tag}) { return 301 $new_url_#{server_tag}; }\n\n" : ''}.join("")}
-
                     try_files $uri @ruby;
                 }
 
-                location /cache {
-                    rewrite ^/cache(.*)$ $1 break;
-                    root /webcache;
-                    include /etc/nginx/mime.types;
-                }
-
-                location /brand {
-                    rewrite ^/brand(.*)$ $1 break;
-                    root /brand;
-                    include /etc/nginx/mime.types;
-                }
-
-                location /dl {
-                    rewrite ^/dl(.*)$ $1 break;
-                    root /dl;
-                    include /etc/nginx/mime.types;
-                }
-
-                location /phpmyadmin {
-                    rewrite ^/phpmyadmin(.*)$ $1 break;
-                    try_files $uri @phpmyadmin;
-                }
-
-                location /pgadmin {
-                    # proxy_set_header Remote-User $pgadmin_user;
-                    proxy_set_header X-Real-IP $remote_addr;
-                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto $scheme;
-                    proxy_pass http://pgadmin_1:80;
-                    proxy_set_header Host $host;
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade $http_upgrade;
-                    proxy_set_header Connection Upgrade;
-                }
-
-                location /neo4j {
-                    rewrite ^/neo4j(.*)$ $1 break;
-                    try_files $uri @neo4j_browser;
-                }
-
-                location /bolt {
-                    rewrite ^/bolt(.*)$ $1 break;
-                    try_files $uri @neo4j_bolt;
-                }
-
                 location @ruby {
-                    proxy_pass http://ruby_1:9292;
-                    proxy_set_header Host $host;
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade $http_upgrade;
-                    proxy_set_header Connection Upgrade;
+                    include /etc/nginx/snippets/proxy_ws.conf;
+                    proxy_pass http://ruby:9292;
                 }
 
-                location @phpmyadmin {
-                    proxy_pass http://phpmyadmin_1:80;
-                    proxy_set_header Host $host;
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade $http_upgrade;
-                    proxy_set_header Connection Upgrade;
+                # Normalize /w/<token> -> /w/<token>/
+                location ~ ^/w/[a-z0-9]+$ {
+                    return 301 $uri/$is_args$args;
                 }
 
-                # location @neo4j_browser {
-                #     proxy_pass http://neo4j_user_1:7474;
-                #     proxy_set_header Host $host;
-                #     proxy_http_version 1.1;
-                #     proxy_set_header Upgrade $http_upgrade;
-                #     proxy_set_header Connection Upgrade;
-                # }
+                location ~ ^/w/[a-z0-9]+/ {
+                    if ($hs_no_upstream) { return 404; }
+                    if ($hs_private_missing_sid) { return 403; }
+                    if ($hs_allowed = 0) { return 403; }
 
-                # location @neo4j_bolt {
-                #     proxy_pass http://neo4j_user_1:7687;
-                #     proxy_set_header Host $host;
-                #     proxy_http_version 1.1;
-                #     proxy_set_header Upgrade $http_upgrade;
-                #     proxy_set_header Connection Upgrade;
-                # }
+                    # strip /w/<token>
+                    rewrite ^/w/[a-z0-9]+(.*)$ $1 break;
+
+                    include /etc/nginx/snippets/proxy_ws_code.conf;
+                    sub_filter_once on;
+                    sub_filter '</head>' '<link rel="preload" href="/include/fonts/0xProtoNerdFontMono/0xProtoNerdFontMono-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/include/fonts.css?#{CACHE_BUSTER}"></head>';
+                    proxy_pass $hs_upstream;
+                }
+            }
+
+            # ==================================
+            # Subdomains: <token>.#{WEBSITE_HOST.split(':').first}
+            # ==================================
+            server {
+                listen 80;
+                server_name ~^(?<t>[a-z0-9]+)\\.#{WEBSITE_HOST.split(':').first.gsub('.', '\.')}$;
+                client_max_body_size 100M;
+                access_log /var/log/nginx/access.log custom;
+                charset utf-8;
+                add_header Permissions-Policy "local-fonts=()" always;
+
+                # ----------------------------------
+                # /proxy/<port> -> <token>-<port>.#{WEBSITE_HOST.split(':').first}
+                # ----------------------------------
+                location ~ ^/proxy/(?<p>\\d+)(?<rest>/.*)?$ {
+                    if ($hs_no_upstream) { return 404; }
+                    if ($hs_private_missing_sid) { return 403; }
+                    if ($hs_allowed = 0) { return 403; }
+
+                    # Default rest to /
+                    set $r $rest;
+                    if ($r = "") { set $r /; }
+
+                    # pick up external port from Host header (e.g. :8025)
+                    set $port "";
+                    if ($http_host ~* :(?<hp>\\d+)$) { set $port :$hp; }
+
+                    return 302 #{DEVELOPMENT ? 'http:' : 'https:'}//${t}-${p}.#{WEBSITE_HOST.split(':').first}$port$r$is_args$args;
+                }
+
+                # Browser-visible Hackschule fonts for the code-server workbench.
+                # These are public static assets; workspace authentication remains
+                # on the code-server proxy itself.
+                location = /include/fonts.css {
+                    root /usr/share/nginx/html;
+                    try_files $uri =404;
+                }
+
+                location ^~ /include/fonts/0xProtoNerdFontMono/ {
+                    root /usr/share/nginx/html;
+                    try_files $uri =404;
+                }
+
+                location / {
+                    if ($hs_no_upstream) { return 404; }
+                    if ($hs_private_missing_sid) { return 403; }
+                    if ($hs_allowed = 0) { return 403; }
+
+                    include /etc/nginx/snippets/proxy_ws_code.conf;
+                    sub_filter_once on;
+                    sub_filter '</head>' '<link rel="preload" href="/include/fonts/0xProtoNerdFontMono/0xProtoNerdFontMono-Regular.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/include/fonts.css?#{CACHE_BUSTER}"></head>';
+                    proxy_pass $hs_upstream;
+                }
+            }
+
+            # ==========================================
+            # Port subdomains: <tag>-<port>.#{WEBSITE_HOST.split(':').first}
+            # ==========================================
+            server {
+                listen 80;
+                server_name ~^(?<t>[a-z0-9]+)-(?<p>\\d+)\\.#{WEBSITE_HOST.split(':').first.gsub('.', '\\.')}$;
+                client_max_body_size 100M;
+                access_log /var/log/nginx/access.log custom;
+                charset utf-8;
+                add_header Permissions-Policy "local-fonts=()" always;
+
+                set $hs_token $t;
+
+                location / {
+                    if ($hs_no_upstream) { return 404; }
+                    if ($hs_private_missing_sid) { return 403; }
+                    if ($hs_allowed = 0) { return 403; }
+
+                    rewrite ^/(.*)$ /proxy/$p/$1 break;
+
+                    include /etc/nginx/snippets/proxy_ws.conf;
+
+                    # First remove leaked /proxy/<port>/ redirects.
+                    proxy_redirect ~^/proxy/[0-9]+(/.*)$ $1;
+                    proxy_redirect ~^/proxy/[0-9]+/?$ /;
+                    proxy_redirect ~^https?://[^/]+/proxy/[0-9]+(/.*)$ $1;
+                    proxy_redirect ~^https?://[^/]+/proxy/[0-9]+/?$ /;
+                    proxy_redirect ~^//[^/]+/proxy/[0-9]+(/.*)$ $1;
+                    proxy_redirect ~^//[^/]+/proxy/[0-9]+/?$ /;
+
+                    # Any remaining absolute redirect must use the browser-visible host.
+                    # $http_host includes :8025 in development.
+                    proxy_redirect ~^(https?://)[^/]+(/.*)$ $1$http_host$2;
+                    proxy_redirect ~^//[^/]+(/.*)$ //$http_host$1;
+
+                    proxy_pass $hs_upstream;
+                }
+            }
+
+            # ==========================================
+            # Shared live apps: live-<tag>.#{WEBSITE_HOST.split(':').first}
+            # ==========================================
+            server {
+                listen 80;
+                server_name ~^live-[a-z0-9]+\.#{WEBSITE_HOST.split(':').first.gsub('.', '\\.')}$;
+                client_max_body_size 100M;
+                access_log /var/log/nginx/access.log custom;
+                charset utf-8;
+
+                location = /_hs_live_auth {
+                    internal;
+                    proxy_pass http://ruby:9292/api/live_app_authorize;
+                    proxy_method GET;
+                    proxy_pass_request_body off;
+                    proxy_set_header Content-Length "";
+                    proxy_set_header Host $http_host;
+                    proxy_set_header Cookie $http_cookie;
+                }
+
+                location / {
+                    if ($hs_live_no_upstream) { return 404; }
+                    auth_request /_hs_live_auth;
+
+                    rewrite ^/(.*)$ /proxy/$hs_live_port/$1 break;
+                    include /etc/nginx/snippets/proxy_ws.conf;
+
+                    # Never expose Hackschule authentication material to student code.
+                    proxy_set_header Cookie "";
+                    proxy_set_header Authorization "";
+                    proxy_hide_header Set-Cookie;
+
+                    proxy_redirect ~^/proxy/[0-9]+(/.*)$ $1;
+                    proxy_redirect ~^/proxy/[0-9]+/?$ /;
+                    proxy_redirect ~^https?://[^/]+/proxy/[0-9]+(/.*)$ $1;
+                    proxy_redirect ~^https?://[^/]+/proxy/[0-9]+/?$ /;
+                    proxy_redirect ~^//[^/]+/proxy/[0-9]+(/.*)$ $1;
+                    proxy_redirect ~^//[^/]+/proxy/[0-9]+/?$ /;
+
+                    # Any remaining absolute redirect must use the browser-visible host.
+                    # $http_host includes :8025 in development.
+                    proxy_redirect ~^(https?://)[^/]+(/.*)$ $1$http_host$2;
+                    proxy_redirect ~^//[^/]+(/.*)$ //$http_host$1;
+
+                    proxy_pass $hs_live_upstream;
+                }
+            }
+
+            # ===========
+            # phpMyAdmin
+            # ===========
+            server {
+                listen 80;
+                server_name phpmyadmin.#{WEBSITE_HOST.split(':').first};
+
+                client_max_body_size 100M;
+                access_log /var/log/nginx/access.log custom;
+                charset utf-8;
+
+                location / {
+                    include /etc/nginx/snippets/proxy_ws.conf;
+                    proxy_pass http://phpmyadmin:80;
+                }
+            }
+
+            # ======
+            # Neo4j
+            # ======
+            server {
+                listen 80;
+                server_name ~^neo4j-(?<t>[a-z0-9]+)\.#{WEBSITE_HOST.split(':').first.gsub('.', '\.')}$;
+
+                client_max_body_size 100M;
+                access_log /var/log/nginx/access.log custom;
+                charset utf-8;
+
+                location / {
+                    include /etc/nginx/snippets/proxy_ws.conf;
+                    proxy_pass http://neo4j:7474;
+                }
+            }
+
+            server {
+                listen 80;
+                server_name bolt.#{WEBSITE_HOST.split(':').first};
+
+                client_max_body_size 100M;
+                access_log /var/log/nginx/access.log custom;
+                charset utf-8;
+
+                location / {
+                    include /etc/nginx/snippets/proxy_ws.conf;
+                    proxy_set_header Sec-WebSocket-Protocol $http_sec_websocket_protocol;
+                    proxy_buffering off;
+                    proxy_read_timeout 1h;
+                    proxy_send_timeout 1h;
+
+                    proxy_pass http://neo4j:7687;
+                }
+            }
         END_OF_STRING
 
         STDERR.puts ">>> Writing nginx config..."
 
-        File.open('/nginx/default.conf', 'w') do |f|
-            f.puts nginx_config_first_part
-            users.each do |row|
-                user = row['u']
-                test = row['t']
-                email_with_test_tag = "#{user[:email]}#{(test || {})[:tag]}"
-                server_tag = "#{user[:server_tag]}#{(test || {})[:tag]}"
-                fs_tag = fs_tag_for_email(email_with_test_tag)
-                if running_servers.include?(fs_tag)
-                    f.puts <<~END_OF_STRING
-                    location /#{server_tag}/ {
-                        if ($cookie_hs_server_sid != "#{user[:server_sid]}") {
-                            return 403;
-                        }
-                        rewrite ^/#{server_tag}(.*)$ $1 break;
-                        proxy_set_header Host $http_host;
-                        proxy_set_header Upgrade $http_upgrade;
-                        proxy_set_header Connection upgrade;
-                        proxy_set_header Accept-Encoding gzip;
-                        proxy_pass http://#{running_servers[fs_tag][:ip]}:8443;
-                    }
-                    END_OF_STRING
-                    if test.nil?
-                        if user[:share_tag] && user[:share_tag] =~ /^[a-z0-9]{48}$/
-                            f.puts <<~END_OF_STRING
-                                location /#{user[:share_tag]}/ {
-                                    rewrite ^/#{user[:share_tag]}(.*)$ $1 break;
-                                    proxy_set_header Host $http_host;
-                                    proxy_set_header Upgrade $http_upgrade;
-                                    proxy_set_header Connection upgrade;
-                                    proxy_set_header Accept-Encoding gzip;
-                                    proxy_pass http://#{running_servers[fs_tag][:ip]}:8443;
-                                }
-                            END_OF_STRING
-                        end
-                        $neo4j.neo4j_query(<<~END_OF_QUERY, {:email => user[:email]}).each do |row|
-                            MATCH (:User)-[r:WATCHING]->(u:User {email: $email})
-                            RETURN r.watch_tag;
-                        END_OF_QUERY
-                            watch_tag = row['r.watch_tag']
-                            f.puts <<~END_OF_STRING
-                                location /#{watch_tag}/ {
-                                    rewrite ^/#{watch_tag}(.*)$ $1 break;
-                                    proxy_set_header Host $http_host;
-                                    proxy_set_header Upgrade $http_upgrade;
-                                    proxy_set_header Connection upgrade;
-                                    proxy_set_header Accept-Encoding gzip;
-                                    proxy_pass http://#{running_servers[fs_tag][:ip]}:8443;
-                                }
-                            END_OF_STRING
-                        end
-                    end
-                end
-            end
-            f.puts "}"
-        end
+        AtomicFile.write('/nginx-snippets/proxy_ws.conf', <<~END_OF_STRING)
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection upgrade;
+            proxy_set_header Accept-Encoding gzip;
+        END_OF_STRING
+
+        AtomicFile.write('/nginx-snippets/proxy_ws_code.conf', <<~END_OF_STRING)
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection upgrade;
+            proxy_set_header Accept-Encoding $hs_code_accept_encoding;
+        END_OF_STRING
+
+        AtomicFile.write('/nginx/default.conf', nginx_config)
+
         STDERR.puts ">>> Sending HUP to nginx to reload nginx config"
-        system("docker kill -s HUP workspace_nginx_1")
+        begin
+            shell_ok("docker kill -s HUP workspace_nginx_1", :timeout => shell_timeout(:nginx_reload))
+        rescue => hup_error
+            nginx_state = shell_capture(
+                "docker ps -a --filter name=^/workspace_nginx_1$ --format '{{.State}}'",
+                :timeout => shell_timeout(:docker_inspect)
+            ).strip
+            raise hup_error if nginx_state == 'running'
+            STDERR.puts ">>> nginx is not running yet (state: #{nginx_state.empty? ? 'absent' : nginx_state}); it will read the published config on startup"
+        end
     end
+
+    private_class_method :refresh_nginx_config_locked
 
     def self.convert_image(image_path)
         image_sha1 = Digest::SHA1.hexdigest(File.read(image_path))[0, 16]
@@ -521,16 +1068,27 @@ class Main < Sinatra::Base
             STDERR.puts "Copying #{image_path} to cache..."
             FileUtils.cp(image_path, target_path)
         end
-        [1024, 512].each do |width|
-            target_path_width = "/webcache/#{image_sha1}-#{width}.webp"
-            unless FileUtils.uptodate?(target_path_width, [target_path])
-                system("magick #{target_path} -resize #{width}x #{target_path_width}")
-                if $? != 0
-                    STDERR.puts "...conversion of #{image_path} failed!"
-                end
-            end
-        end
         image_sha1
+    end
+
+    # Width-specific variants are only needed by overview cards. Restrict this
+    # to normal converted cache entries; data-noconvert images use a different key.
+    def self.ensure_image_width(image_url, width)
+        match = image_url&.match(%r{\A/cache/([0-9a-f]{16})\.webp\z})
+        return unless match
+
+        source_path = "/webcache/#{match[1]}.webp"
+        return unless File.exist?(source_path)
+
+        target_path = "/webcache/#{match[1]}-#{width}.webp"
+        return if FileUtils.uptodate?(target_path, [source_path])
+
+        command = "convert #{source_path} -resize #{width}x #{target_path}"
+        system(command)
+        if $? != 0
+            STDERR.puts command
+            STDERR.puts "...conversion of #{source_path} failed!"
+        end
     end
 
     def self.inject_autotoc(root, options = {})
@@ -558,29 +1116,143 @@ class Main < Sinatra::Base
         end
     end
 
-    def self.parse_content
-        STDERR.puts "Parsing content..."
+    DEFAULT_PAGE_DESCRIPTION = 'Der Hackschule Workspace ist eine browserbasierte Entwicklungsumgebung für den Informatikunterricht mit Visual Studio Code, Terminal, Git und zahlreichen Tutorials.'
+
+    def self.normalize_page_metadata_text(text)
+        CGI.unescapeHTML(text.to_s)
+            .delete("\u00ad")
+            .gsub(/\s+/, ' ')
+            .strip
+    end
+
+    def self.truncate_page_metadata_text(text, max_length = 180)
+        return text if text.length <= max_length
+
+        shortened = text[0, max_length + 1].sub(/\s+\S*\z/, '').rstrip
+        shortened = text[0, max_length].rstrip if shortened.empty?
+        "#{shortened}…"
+    end
+
+    def self.inject_page_metadata(html, request_path)
+        doc = Nokogiri::HTML(html)
+        body = doc.at_css('body') || doc
+        homepage = ['/', '/index.html'].include?(request_path)
+
+        heading = nil
+        unless homepage
+            heading = body.at_css('h1') || body.at_css('h2')
+        end
+
+        heading_text = normalize_page_metadata_text(heading&.text)
+        page_title = if heading_text.empty?
+            'Hackschule Workspace'
+        else
+            "#{heading_text} · Hackschule Workspace"
+        end
+
+        description_node = nil
+        description_node = body.at_css('.abstract') unless homepage
+        if description_node.nil?
+            description_node = body.css('p').find do |paragraph|
+                normalize_page_metadata_text(paragraph.text).length >= 40
+            end
+        end
+
+        description = normalize_page_metadata_text(description_node&.text)
+        description = DEFAULT_PAGE_DESCRIPTION if description.empty?
+        description = truncate_page_metadata_text(description)
+
+        escaped_title = CGI.escapeHTML(page_title)
+        escaped_description = CGI.escapeHTML(description)
+        description_tag = %(<meta name="description" content="#{escaped_description}">)
+
+        result = html.sub(
+            /<title\b[^>]*>.*?<\/title>/mi,
+            "<title>#{escaped_title}</title>"
+        )
+
+        description_pattern = /<meta\s+name=["']description["']\s+content=["'][^"']*["']\s*\/?>/i
+        if result.match?(description_pattern)
+            result = result.sub(description_pattern, description_tag)
+        else
+            result = result.sub(
+                /<\/title>/i,
+                "</title>\n    #{description_tag}"
+            )
+        end
+
+        result
+    end
+
+    def self.content_catalog_signature
+        digest = Digest::SHA256.new
+        ['/src/content/sections.yaml', '/src/content/hyphenation.txt'].each do |path|
+            digest.update(File.binread(path))
+            digest.update("\0")
+        end
+        Dir['/src/content/**/*.md'].sort.each do |path|
+            digest.update(path)
+            digest.update("\0")
+        end
+        digest.hexdigest
+    end
+
+    def self.refresh_content_catalog
+        return unless DEVELOPMENT
+        signature = content_catalog_signature
+        return if defined?(@@content_catalog_signature) &&
+            @@content_catalog_signature == signature
+        parse_content
+    end
+
+    def self.refresh_tutorial(slug)
+        return unless DEVELOPMENT
+        refresh_content_catalog
+        path = if defined?(@@content_paths) && @@content_paths
+            @@content_paths[slug]
+        end
+        return unless path && File.file?(path)
+
+        # Generation is intentionally outside @@parse_content_mutex. The
+        # generator may launch a Workspace and make requests back to Ruby.
+        TutorialScreenshots.prepare(File.read(path), path)
+        parse_content(slug)
+    end
+
+    def self.parse_content(only_slug = nil)
+        @@parse_content_mutex ||= Mutex.new
+        @@parse_content_mutex.synchronize do
+            parse_content_locked(only_slug)
+        end
+    end
+
+    def self.parse_content_locked(only_slug = nil)
+        partial = !only_slug.nil?
+        parse_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        STDERR.puts(partial ? "Parsing content: #{only_slug}..." : "Parsing content...")
         hyphenation_map = {}
         File.read('/src/content/hyphenation.txt').split("\n").each do |line|
             line.strip!
             hyphenation_map[line.gsub('-', '')] = line.gsub('-', '&shy;')
         end
         sections = YAML.load(File.read('/src/content/sections.yaml'))
-        @@section_order = sections.map { |section| section['key'] }
-        @@sections = {}
+        section_order = sections.map { |section| section['key'] }
+        parsed_sections = {}
+        parsed_content = {}
+        parsed_content_paths = {}
         paths = []
         seen_paths = Set.new()
         sections.each do |section|
-            @@sections[section['key']] = {}
+            parsed_sections[section['key']] = {}
             section.each_pair do |k, v|
-                @@sections[section['key']][k.to_sym] = v
+                parsed_sections[section['key']][k.to_sym] = v
             end
-            if @@sections[section['key']][:description]
+            if parsed_sections[section['key']][:description]
                 hyphenation_map.each_pair do |a, b|
-                    @@sections[section['key']][:description].gsub!(a, b)
+                    parsed_sections[section['key']][:description].gsub!(a, b)
                 end
             end
-            @@sections[section['key']][:entries] = []
+            parsed_sections[section['key']][:entries] = []
             (section['entries'] || []).each do |path|
                 dev_only = path[0] == '.'
                 path = path.sub(/^\./, '')
@@ -602,27 +1274,56 @@ class Main < Sinatra::Base
             end
         end
 
-        @@kenney = {}
-        Dir['/src/content/anaglyph/kenney/*/*.webp'].sort.each do |path|
-            kit = path.split('/').last(2).first
-            model = path.split('/').last(2).last.sub('.webp', '')
-            @@kenney[kit] ||= []
-            @@kenney[kit] << model
+        parsed_kenney = if partial && defined?(@@kenney) && @@kenney
+            @@kenney
+        else
+            {}
+        end
+        unless partial
+            Dir['/src/content/anaglyph/kenney/*/*.webp'].sort.each do |path|
+                kit = path.split('/').last(2).first
+                model = path.split('/').last(2).last.sub('.webp', '')
+                parsed_kenney[kit] ||= []
+                parsed_kenney[kit] << model
+            end
+
+            parsed_kenney.keys.each do |kit|
+                paths << {:section => 'misc', :path => kit, :original_path => "/src/content/anaglyph/#{kit}.md", :dev_only => false, :kenney => true, :extra => true}
+            end
         end
 
-        @@kenney.keys.each do |kit|
-            paths << {:section => 'misc', :path => kit, :original_path => "/src/content/anaglyph/#{kit}.md", :dev_only => false, :kenney => true, :extra => true}
+        if partial
+            paths.select! do |entry|
+                entry_path = entry[:original_path]
+                next false unless entry_path
+                File.basename(entry_path, '.md')
+                    .sub(/^[0-9]+\-/, '')
+                    .sub('+', '') == only_slug
+            end
+            return false if paths.empty?
         end
-
-        @@content = {}
 
         redcarpet = Redcarpet::Markdown.new(Redcarpet::Render::HTML, {:fenced_code_blocks => true})
         @@parse_content_count ||= 0
         @@parse_content_count += 1
+        parse_content_count = @@parse_content_count
+
+        # Kenney previews are already WebP files, so don't send every image through
+        # the generic image-cache pipeline below. That used to spawn one `cp`
+        # process per preview image. Copy the complete tree once, with one process,
+        # and let generated gallery HTML point at /cache/kenney/... directly.
+        if parse_content_count == 1 && !parsed_kenney.empty?
+            FileUtils.mkdir_p('/webcache/kenney')
+            unless system('cp', '-ru', '/src/content/anaglyph/kenney/.', '/webcache/kenney/')
+                raise 'Failed to prepare Kenney preview cache'
+            end
+        end
+
         paths.each do |entry|
+            entry_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             section = entry[:section]
             path = entry[:original_path]
-            next if @@parse_content_count > 1 && entry[:kenney]
+            next if parse_content_count > 1 && entry[:kenney]
             markdown = nil
             unless entry[:kenney]
                 next unless path
@@ -636,6 +1337,20 @@ class Main < Sinatra::Base
                         io.string
                     end
                 end
+                markdown.gsub!(/_include_svg\(([^)]+)\)/) do |match|
+                    options = $1.split(',').map { |x| x.strip }
+                    StringIO.open do |io|
+                        svg = File.read(File.join(File.dirname(path), options[0]))
+                        dom = Nokogiri::XML(svg)
+                        dom.css('svg').first['class'] = (dom.css('svg').first['class'].to_s.split(' ') + ['full']).join(' ')
+                        dom.css('svg').each do |s|
+                            s.remove_attribute('width')
+                            s.remove_attribute('height')
+                        end
+                        io.puts dom.css('svg').first.to_s
+                        io.string
+                    end
+                end
             else
                 kit = entry[:path]
                 markdown = StringIO.open do |io|
@@ -643,7 +1358,7 @@ class Main < Sinatra::Base
                     io.puts "# #{title}"
                     io.puts
                     io.puts <<~EOS
-                        Um das #{title} verwenden zu können, musst du es erst installieren. Öffne dazu ein Terminal, indem du <span class='key'>Strg</span><span class='key'>J</span> drückst. Führe dann den folgenden Befehl aus:
+                        Um das #{title} verwenden zu können, musst du es erst installieren. Öffne dazu ein Terminal, indem du <kbd>Strg</kbd><kbd>J</kbd> drückst. Führe dann den folgenden Befehl aus:
 
                         ```bash
                         ./download.rb #{kit}
@@ -656,7 +1371,7 @@ class Main < Sinatra::Base
                         Du kannst dann mit dem Befehl `model` ein Modell zu deiner Szene hinzufügen, also z. B.:
 
                         ```ini
-                        model = #{kit}/#{@@kenney[kit].first}
+                        model = #{kit}/#{parsed_kenney[kit].first}
                         ```
 
                         <div class='hint'>
@@ -665,19 +1380,39 @@ class Main < Sinatra::Base
 
                         Die folgenden Modelle stehen zur Auswahl:
 
-                        <div class='kenney-gallery'>
+                        __KENNEY_GALLERY__
                     EOS
-                    @@kenney[kit].each do |model|
-                        io.puts "<div><img src='kenney/#{kit}/#{model}.webp' data-noconvert='true'><div>#{model}</div></div>"
+                    io.string
+                end
+            end
+            parts = markdown.split(/(```.*?```)/m)
+            markdown = parts.map.with_index do |part, i|
+                if i.odd?
+                    part
+                else
+                    hyphenation_map.each_pair do |a, b|
+                        part.gsub!(a, b)
+                    end
+                    part
+                end
+            end.join
+
+            # Keep the potentially huge gallery out of the hyphenation pass above.
+            # Otherwise every hyphenation-map entry rescans all preview <img> tags.
+            if entry[:kenney]
+                gallery = StringIO.open do |io|
+                    io.puts "<div class='kenney-gallery'>"
+                    parsed_kenney[entry[:path]].each do |model|
+                        io.puts "<div><img alt='' src='/cache/kenney/#{entry[:path]}/#{model}.webp'><div>#{model}</div></div>"
                     end
                     io.puts "</div>"
                     io.string
                 end
+                markdown.sub!('__KENNEY_GALLERY__', gallery)
             end
-            hyphenation_map.each_pair do |a, b|
-                markdown.gsub!(a, b)
-            end
+
             slug = File.basename(path, '.md').sub(/^[0-9]+\-/, '').sub('+', '')
+            parsed_content_paths[slug] = path unless entry[:kenney]
             html = redcarpet.render(markdown)
             root = Nokogiri::HTML(html)
             meta = root.css('.meta').first
@@ -686,17 +1421,34 @@ class Main < Sinatra::Base
             end
 
             root.css('img').each do |img|
-                src = img.attr('src')
-                image_path = File.join(File.dirname(path), src)
-                next unless File.exist?(image_path)
-                if img.attr('data-noconvert')
-                    sha1 = Digest::SHA1.hexdigest(image_path)
-                    system("cp -pu \"#{image_path}\" /webcache/#{sha1}.#{image_path.split('.').last}")
-                    img['src'] = "/cache/#{sha1}.#{image_path.split('.').last}"
-                else
-                    sha1 = convert_image(image_path)
-                    img['src'] = "/cache/#{sha1}.webp"
+                begin
+                    src = img.attr('src')
+                    next if src.nil?
+                    if DEVELOPMENT && !src.start_with?('/cache/')
+                        img['data-tutorial-screenshot-source'] = src
+                    end
+                    next if src.start_with?('/cache/')
+                    image_path = File.join(File.dirname(path), src)
+                    next unless File.exist?(image_path)
+                    if img.attr('data-noconvert')
+                        sha1 = Digest::SHA1.hexdigest(image_path)
+                        extension = File.extname(image_path)
+                        target_path = "/webcache/#{sha1}#{extension}"
+                        FileUtils.cp(image_path, target_path) unless FileUtils.uptodate?(target_path, [image_path])
+                        img['src'] = "/cache/#{sha1}#{extension}"
+                    else
+                        sha1 = convert_image(image_path)
+                        img['src'] = "/cache/#{sha1}.webp"
+                    end
+                    if img.classes.include?('full')
+                        img.wrap("<div class='scroll-x'>")
+                    end
+                rescue
+                    STDERR.puts img.to_s
+                    raise
                 end
+            end
+            root.css('svg').each do |img|
                 if img.classes.include?('full')
                     img.wrap("<div class='scroll-x'>")
                 end
@@ -706,7 +1458,8 @@ class Main < Sinatra::Base
                 image_path = File.join(File.dirname(path), src)
                 next unless File.exist?(image_path)
                 sha1 = Digest::SHA1.hexdigest(File.read(image_path))[0, 16]
-                system("cp -pu \"#{image_path}\" /webcache/#{sha1}.mp4")
+                target_path = "/webcache/#{sha1}.mp4"
+                FileUtils.cp(image_path, target_path) unless FileUtils.uptodate?(target_path, [image_path])
                 video['src'] = "/cache/#{sha1}.mp4"
             end
             root.css('a').each do |a|
@@ -724,6 +1477,14 @@ class Main < Sinatra::Base
                     lineno = true
                     language = language.sub(/_lineno$/, '')
                 end
+                wrap = false
+                if language =~ /_wrap$/
+                    wrap = true
+                    language = language.sub(/_wrap$/, '')
+                end
+
+                pre['class'] = [pre['class'], 'wrap-code'].compact.join(' ') if wrap
+
                 formatter = if lineno
                     Rouge::Formatters::HTMLTable.new(Rouge::Formatters::HTML.new)
                     # Rouge::Formatters::HTMLLineTable.new(Rouge::Formatters::HTML.new)
@@ -736,6 +1497,8 @@ class Main < Sinatra::Base
                     lexer = Rouge::Lexers::Shell.new
                 when 'basic'
                     lexer = Rouge::Lexers::VisualBasic.new
+                when 'bibtex'
+                    lexer = Rouge::Lexers::BibTeX.new
                 when 'c'
                     lexer = Rouge::Lexers::C.new
                 when 'clisp'
@@ -766,6 +1529,8 @@ class Main < Sinatra::Base
                     lexer = Rouge::Lexers::JSON.new
                 when 'lua'
                     lexer = Rouge::Lexers::Lua.new
+                when 'markdown'
+                    lexer = Rouge::Lexers::Markdown.new
                 when 'nasm'
                     lexer = Rouge::Lexers::Nasm.new
                 when 'pascal'
@@ -782,6 +1547,8 @@ class Main < Sinatra::Base
                     lexer = Rouge::Lexers::SQL.new
                 when 'svelte'
                     lexer = Rouge::Lexers::Svelte.new
+                when 'tex'
+                    lexer = Rouge::Lexers::TeX.new
                 when 'text'
                     lexer = Rouge::Lexers::PlainText.new
                 end
@@ -803,53 +1570,165 @@ class Main < Sinatra::Base
             #     end
             # end
             meta = root.css('.meta').first
-            @@content[slug] = {
+            entry_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - entry_started_at
+            STDERR.puts "Added content: #{slug} (#{format('%.3f', entry_elapsed)}s)"
+            parsed_content[slug] = {
                 :html => html,
                 :dev_only => entry[:dev_only],
             }
             unless entry[:extra]
-                @@sections[section][:entries] << slug
+                parsed_sections[section][:entries] << slug
                 if meta
                     meta = YAML.load(meta)
                     if meta['image']
                         parts = meta['image'].split(':')
-                        sha1 = convert_image(File.join(File.dirname(path), parts[0]))
-                        @@content[slug][:image] = "/cache/#{sha1}.webp"
-                        @@content[slug][:image_x] = (parts[1] || '50').to_i
-                        @@content[slug][:image_y] = (parts[2] || '50').to_i
-                        @@content[slug][:needs_contrast] = meta['needs_contrast']
+                        image_path = File.join(File.dirname(path), parts[0])
+                        sha1 = convert_image(image_path)
+                        parsed_content[slug][:image] = "/cache/#{sha1}.webp"
+
+                        extension = File.extname(image_path)
+                        dark_image_path = image_path.delete_suffix(extension) + "-dark#{extension}"
+                        if File.exist?(dark_image_path)
+                            dark_sha1 = convert_image(dark_image_path)
+                            parsed_content[slug][:image_dark] = "/cache/#{dark_sha1}.webp"
+                        end
+
+                        parsed_content[slug][:image_x] = (parts[1] || '50').to_i
+                        parsed_content[slug][:image_y] = (parts[2] || '50').to_i
+                        parsed_content[slug][:needs_contrast] = meta['needs_contrast']
                     end
                 end
                 begin
-                    @@content[slug][:title] = root.css('h1').first.to_s.sub('<h1>', '').sub('</h1>', '').strip
+                    parsed_content[slug][:title] = root.css('h1').first.to_s.sub('<h1>', '').sub('</h1>', '').strip
                 rescue
                 end
                 begin
-                    @@content[slug][:abstract] = root.css('.abstract').first.text
+                    parsed_content[slug][:abstract] = root.css('.abstract').first.text
                 rescue
                 end
                 begin
-                    @@content[slug][:image] ||= root.css('img').first.attr('src')
-                    @@content[slug][:image_x] ||= 50
-                    @@content[slug][:image_y] ||= 50
+                    parsed_content[slug][:image] ||= root.css('img').first.attr('src')
+                    parsed_content[slug][:image_x] ||= 50
+                    parsed_content[slug][:image_y] ||= 50
                 rescue
                 end
             end
         end
+        if partial
+            parsed_content.each_pair do |slug, content|
+                @@content[slug] = content
+            end
+            parsed_content_paths.each_pair do |slug, path|
+                @@content_paths[slug] = path
+            end
+        else
+            # Publish only complete parse results. Concurrent requests continue
+            # to read the previous complete snapshot while this method is working.
+            @@section_order = section_order
+            @@sections = parsed_sections
+            @@kenney = parsed_kenney
+            @@content = parsed_content
+            @@content_paths = parsed_content_paths
+            @@content_catalog_signature = content_catalog_signature
+        end
+
+        parse_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - parse_started_at
+        label = partial ? "content #{only_slug}" : 'content'
+        STDERR.puts "Finished parsing #{label} in #{format('%.3f', parse_elapsed)}s"
+        true
+    end
+
+    private_class_method :parse_content_locked
+
+    def codebite_broadcast(email, payload)
+        msg = payload.is_a?(String) ? payload : payload.to_json
+        conns = @@codebite_mutex.synchronize do
+            (@@codebite_ws_clients[email] || {}).values.dup
+        end
+        conns.each do |ws|
+            begin
+                ws.send(msg)
+            rescue
+                # ignore broken sockets; cleanup happens on close
+            end
+        end
+    end
+
+    def kill_codebite_run(email, reason: "replaced")
+        run = nil
+        @@codebite_mutex.synchronize do
+            run = @@codebite_runs[email]
+            @@codebite_runs.delete(email)
+        end
+        return unless run
+
+        pid = run[:pid]
+        codebite_broadcast(email, { action: "codebite_status", status: "killing", reason: reason })
+
+        begin
+            # Try graceful terminate
+            Process.kill("TERM", pid) rescue nil
+
+            # Wait briefly, then hard kill
+            t0 = Time.now
+            while Time.now - t0 < 1.0
+                break unless run[:wait_thr]&.alive?
+                sleep 0.05
+            end
+            if run[:wait_thr]&.alive?
+                Process.kill("KILL", pid) rescue nil
+            end
+        ensure
+            # Stop reader threads
+            (run[:threads] || []).each do |thr|
+                thr.kill rescue nil
+            end
+            run[:wait_thr]&.join(0.2) rescue nil
+        end
+
+        codebite_broadcast(email, {
+            action: "codebite_exit",
+            exit_code: 1,
+            killed: true
+        })
+    end
+
+    def codebite_run_lock(email)
+        @@codebite_mutex.synchronize do
+            @@codebite_run_locks[email] ||= Mutex.new
+        end
+    end
+
+    @@load_invitations_mutex = Mutex.new
+    @@admin_ws_mutex = Mutex.new
+    @@login_request_mutex = Mutex.new
+    @@mysql_database_locks_mutex = Mutex.new
+    @@mysql_database_locks = {}
+
+    def mysql_database_lock(email)
+        @@mysql_database_locks_mutex.synchronize do
+            @@mysql_database_locks[email] ||= Mutex.new
+        end
     end
 
     def self.load_invitations
-        @@invitations = {}
-        @@user_groups = {}
-        @@user_group_order = []
+        @@load_invitations_mutex.synchronize do
+            load_invitations_locked
+        end
+    end
+
+    def self.load_invitations_locked
+        invitations = {}
+        user_groups = {}
+        user_group_order = []
 
         current_group = 'Administrator'
 
         ADMIN_USERS.each do |email|
-            @@user_group_order << current_group unless @@user_group_order.include?(current_group)
-            @@invitations[email] = { :group => current_group, :name => email }
-            @@user_groups[current_group] ||= []
-            @@user_groups[current_group] << email
+            user_group_order << current_group unless user_group_order.include?(current_group)
+            invitations[email] = { :group => current_group, :name => email }
+            user_groups[current_group] ||= []
+            user_groups[current_group] << email
         end
 
         current_group = '(keine Gruppe)'
@@ -863,35 +1742,43 @@ class Main < Sinatra::Base
                     if line[0] == '>'
                         current_group = line[1, line.size - 1].strip
                         group_admins[current_group] ||= []
-                        @@user_group_order << current_group unless @@user_group_order.include?(current_group)
+                        user_group_order << current_group unless user_group_order.include?(current_group)
                     elsif line[0] == '+'
                         group_admins[current_group] << line[1, line.size - 1].strip.delete_prefix('<').delete_suffix('>')
                     else
                         parts = line.strip.split(' ')
                         email = parts.last.delete_prefix('<').delete_suffix('>').downcase
-                        unless @@invitations[email]
-                            @@user_groups[current_group] ||= []
-                            @@user_groups[current_group] << email
-                            @@invitations[email] = { :group => current_group }
+                        unless invitations[email]
+                            user_groups[current_group] ||= []
+                            user_groups[current_group] << email
+                            invitations[email] = { :group => current_group }
                         end
                         if parts.size > 1
                             name = parts[0, parts.size - 1].join(' ')
-                            @@invitations[email][:name] = name
+                            invitations[email][:name] = name
                         else
-                            @@invitations[email][:name] = email
+                            invitations[email][:name] = email
                         end
                     end
                 end
             end
         end
-        @@teachers = {}
+        teachers = {}
         group_admins.each_pair do |group, emails|
             emails.each do |email|
-                @@teachers[email] ||= Set.new()
-                @@teachers[email] << group
+                teachers[email] ||= Set.new()
+                teachers[email] << group
             end
         end
+
+        # Keep readers on the previous complete snapshot until parsing finishes.
+        @@invitations = invitations
+        @@user_groups = user_groups
+        @@user_group_order = user_group_order
+        @@teachers = teachers
     end
+
+    private_class_method :load_invitations_locked
 
     def self.prepare_downloads()
         unless File.exist?("/dl/working-with-files.tar.gz")
@@ -911,19 +1798,25 @@ class Main < Sinatra::Base
 
     configure do
         CONSTRAINTS_LIST = [
+            'Code/sha1',
+            'Database/name',
             'File/sha1',
-            'Test/tag',
-            'User/email',
-            'User/server_tag',
-            'User/share_tag',
+            'Language/name',
+            'LiveAppShare/tag',
             'LoginRequest/tag',
             'Session/sid',
-            'TIC80File/path',
-            'TIC80Dir/path',
-            'Database/name'
+            'Solved/id',
+            'Submission/id',
+            'Task/name',
+            'Test/tag',
+            'User/email',
+            'User/db_login',
+            'User/server_tag',
+            'User/share_tag',
         ]
         INDEX_LIST = [
-            'Test/running'
+            'Submission/success',
+            'Test/running',
         ]
 
         setup = SetupDatabase.new()
@@ -934,7 +1827,10 @@ class Main < Sinatra::Base
         @@client_ids_for_email = {}
         @@threads_for_client_id = {}
         $neo4j.setup_constraints_and_indexes(CONSTRAINTS_LIST, INDEX_LIST)
+        self.reconcile_live_apps!(:refresh_nginx => false)
         self.refresh_nginx_config()
+
+        @@content = {}
         self.parse_content()
         self.load_invitations()
         self.prepare_downloads()
@@ -945,66 +1841,167 @@ class Main < Sinatra::Base
         rescue
         end
 
+        @@codebite_ws_clients ||= {}     # email => { client_id => ws }
+        @@codebite_runs ||= {}           # email => { pid:, wait_thr:, threads:, started_at:, task:, language: }
+        @@codebite_mutex ||= Mutex.new   # protects @@codebite_runs + @@codebite_ws_clients
+        @@codebite_run_locks ||= {}      # serializes start/stop lifecycle per user
+
         Thread.new do
             loop do
                 system("ruby housekeeping.rb")
                 sleep 3600
             end
         end
-    end
 
-    before '*' do
-        @session_user = nil
-        if request.cookies.include?('hs_sid')
-            sid = request.cookies['hs_sid']
-            if (sid.is_a? String) && (sid =~ /^[0-9A-Za-z]+$/)
-                first_sid = sid.split(',').first
-                if first_sid =~ /^[0-9A-Za-z]+$/
-                    results = neo4j_query(<<~END_OF_QUERY, :sid => first_sid).to_a
-                        MATCH (s:Session {sid: $sid})-[:FOR]->(u:User)
-                        RETURN s, u;
-                    END_OF_QUERY
-                    if results.size == 1
-                        begin
-                            session = results.first['s']
-                            session_expiry = session[:expires]
-                            if DateTime.parse(session_expiry) > DateTime.now
-                                email = results.first['u'][:email]
-                                @session_user = {
-                                    :email => email.downcase,
-                                    :server_tag => results.first['u'][:server_tag],
-                                    :share_tag => results.first['u'][:share_tag],
-                                }
-                                results.first['u'].each_pair do |k, v|
-                                    next if @session_user.include?(k.to_sym)
-                                    @session_user[k.to_sym] = v
-                                end
-                                @session_user[:show_workspace] = true unless @session_user.include?(:show_workspace)
-                                # # set server_sid cookie if it's not set or out of date
-                                expires = Time.new + 3600 * 24 * 365
-                                [:hs_server_sid].each do |key|
-                                    if request.cookies[key.to_s] != results.first['u'][key.to_s.sub('hs_', '').to_sym]
-                                        response.set_cookie(key.to_s,
-                                            :domain => ".#{WEBSITE_HOST}",
-                                            :value => results.first['u'][key.to_s.sub('hs_', '').to_sym],
-                                            :expires => expires,
-                                            :path => '/',
-                                            :httponly => true,
-                                            :secure => DEVELOPMENT ? false : true
-                                        )
-                                    end
-                                end
-                            end
-                        rescue
-                            # something went wrong, delete the session
-                            results = neo4j_query(<<~END_OF_QUERY, :sid => first_sid).to_a
-                                MATCH (s:Session {sid: $sid})
-                                DETACH DELETE s;
-                            END_OF_QUERY
-                        end
+        Thread.new do
+            loop do
+                sleep 10
+                Main.reconcile_live_apps!
+            end
+        end
+        # --- RuboCop server + config (layout-only formatting) ---
+        begin
+            unless File.exist?(RUBOCOP_LAYOUT_CONFIG_PATH)
+                File.write(
+                    RUBOCOP_LAYOUT_CONFIG_PATH,
+                    <<~YAML
+                      AllCops:
+                        NewCops: disable
+
+                      Layout/IndentationWidth:
+                        Width: 4
+                    YAML
+                )
+            end
+
+            # Start rubocop server once per Sinatra process
+            # (safe to call multiple times; it will no-op if already started)
+            system("rubocop --start-server >/dev/null 2>&1")
+        rescue => e
+            STDERR.puts "RuboCop server start failed: #{e.class}: #{e.message}"
+        end
+
+        @@db_init_queue ||= Queue.new
+        @@db_init_mutex ||= Mutex.new
+        @@db_init_queued_keys ||= Set.new
+
+        Thread.new do
+            loop do
+                job = @@db_init_queue.pop
+                key = job[:key]
+
+                begin
+                    STDERR.puts ">>> DB init worker: starting #{key}"
+                    Main.init_mysql(job[:email], job[:db_login])
+                    Main.init_neo4j(job[:email], job[:db_login])
+                    STDERR.puts ">>> DB init worker: finished #{key}"
+                rescue => e
+                    STDERR.puts ">>> DB init worker failed for #{key}: #{e.class}: #{e.message}"
+                    STDERR.puts e.backtrace.join("\n")
+                ensure
+                    @@db_init_mutex.synchronize do
+                        @@db_init_queued_keys.delete(key)
                     end
                 end
             end
+        end
+
+        self.ensure_server_start_queue!
+        Thread.new do
+            Main.server_start_worker_loop
+        end
+    end
+
+    before '*' do
+        origin_sensitive = %w(POST PUT PATCH DELETE).include?(request.request_method) ||
+            ['/ws', '/ws_codebites', '/logout'].include?(request.path)
+        if origin_sensitive && !Authentication.same_origin?(
+            :origin => request.env['HTTP_ORIGIN'],
+            :referer => request.env['HTTP_REFERER'],
+            :expected_origin => WEB_ROOT,
+        )
+            content_type :json
+            halt 403, { :error => 'invalid_origin' }.to_json
+        end
+
+        @session_user = nil
+        sid = current_session_sid
+        if sid && sid.match?(/\A[0-9A-Za-z]+\z/)
+            results = neo4j_query(<<~END_OF_QUERY, :sid => sid).to_a
+                MATCH (s:Session {sid: $sid})-[:FOR]->(u:User)
+                RETURN s, u;
+            END_OF_QUERY
+
+            if results.size == 1
+                session = results.first['s']
+                session_expiry = begin
+                    DateTime.parse(session[:expires].to_s)
+                rescue ArgumentError, TypeError
+                    nil
+                end
+
+                if session_expiry && session_expiry > DateTime.now
+                    email = results.first['u'][:email]
+                    @session_user = {
+                        :email => email.downcase,
+                        :server_tag => results.first['u'][:server_tag],
+                        :share_tag => results.first['u'][:share_tag],
+                    }
+                    results.first['u'].each_pair do |k, v|
+                        next if @session_user.include?(k.to_sym)
+                        @session_user[k.to_sym] = v
+                    end
+                    @session_user[:show_workspace] = true unless @session_user.include?(:show_workspace)
+
+                    expires = session_cookie_expiry
+                    if DEVELOPMENT || request.cookies.include?('hs_sid')
+                        set_session_cookie(sid, expires)
+                    end
+
+                    server_sid = results.first['u'][:server_sid]
+                    if server_sid && request.cookies['hs_server_sid'] != server_sid
+                        set_server_sid_cookie(server_sid, expires)
+                    end
+                else
+                    neo4j_query(<<~END_OF_QUERY, :sid => sid)
+                        MATCH (s:Session {sid: $sid})
+                        DETACH DELETE s;
+                    END_OF_QUERY
+                end
+            end
+        end
+
+        if sid && @session_user.nil?
+            clear_session_cookies
+        elsif sid.nil?
+            clear_domain_cookie('hs_server_sid') if request.cookies.include?('hs_server_sid')
+            clear_domain_cookie('hs_watch_tag') if request.cookies.include?('hs_watch_tag')
+        end
+
+        if @session_user && @session_user[:db_login].nil?
+            @session_user[:db_login] = Main.db_login_for_email(
+                @session_user[:email]
+            )
+        end
+    end
+
+    def self.enqueue_database_init(email:, db_login:)
+        DatabaseIdentity.validate!(db_login)
+        key = "#{email}:#{db_login}"
+
+        STDERR.puts ">>> Waiting for DB init mutex to enqueue #{key}..."
+        @@db_init_mutex.synchronize do
+            return false if @@db_init_queued_keys.include?(key)
+
+            @@db_init_queued_keys << key
+            @@db_init_queue << {
+                key: key,
+                email: email,
+                db_login: db_login,
+            }
+
+            STDERR.puts ">>> DB init queued: #{key}"
+            true
         end
     end
 
@@ -1042,6 +2039,97 @@ class Main < Sinatra::Base
         RandomTag::generate(48)
     end
 
+    def session_cookie_name
+        Authentication.session_cookie_name(:development => DEVELOPMENT)
+    end
+
+    def current_session_sid
+        raw = request.cookies[session_cookie_name]
+        raw ||= request.cookies['hs_sid'] unless DEVELOPMENT
+        return nil unless raw.is_a?(String)
+
+        raw.split(',').first
+    end
+
+    def session_cookie_expiry
+        Time.now + 3600 * 24 * Authentication::SESSION_LIFETIME_DAYS
+    end
+
+    def set_session_cookie(sid, expires = session_cookie_expiry)
+        response.set_cookie(
+            session_cookie_name,
+            Authentication.session_cookie_options(
+                :value => sid,
+                :expires => expires,
+                :development => DEVELOPMENT,
+            ),
+        )
+        clear_legacy_session_cookie
+    end
+
+    def set_server_sid_cookie(server_sid, expires = session_cookie_expiry)
+        response.set_cookie(
+            'hs_server_sid',
+            Authentication.domain_cookie_options(
+                :value => server_sid,
+                :expires => expires,
+                :domain => WEBSITE_HOST.split(':').first,
+                :development => DEVELOPMENT,
+            ),
+        )
+    end
+
+    def clear_legacy_session_cookie
+        response.set_cookie(
+            'hs_sid',
+            Authentication.domain_cookie_options(
+                :value => '',
+                :expires => Time.at(0),
+                :domain => WEBSITE_HOST.split(':').first,
+                :development => DEVELOPMENT,
+            ),
+        )
+    end
+
+    def clear_domain_cookie(name)
+        response.set_cookie(
+            name,
+            Authentication.domain_cookie_options(
+                :value => '',
+                :expires => Time.at(0),
+                :domain => WEBSITE_HOST.split(':').first,
+                :development => DEVELOPMENT,
+            ),
+        )
+    end
+
+    def clear_session_cookies
+        response.set_cookie(
+            session_cookie_name,
+            Authentication.session_cookie_options(
+                :value => '',
+                :expires => Time.at(0),
+                :development => DEVELOPMENT,
+            ),
+        )
+        clear_legacy_session_cookie
+        clear_domain_cookie('hs_server_sid')
+        clear_domain_cookie('hs_watch_tag')
+    end
+
+    def cleanup_login_requests
+        cleanup_params = {
+            :now => Time.now.to_i,
+            :max_attempts => Authentication::LOGIN_REQUEST_MAX_ATTEMPTS,
+        }
+        neo4j_query(<<~END_OF_QUERY, cleanup_params)
+            MATCH (l:LoginRequest)
+            WHERE COALESCE(l.expires_at, 0) <= $now
+               OR COALESCE(l.attempts, 0) >= $max_attempts
+            DETACH DELETE l;
+        END_OF_QUERY
+    end
+
     post '/api/request_login' do
         Main.load_invitations()
         data = parse_request_data(:required_keys => [:email])
@@ -1051,25 +2139,21 @@ class Main < Sinatra::Base
             candidates = @@invitations.keys.select do |x|
                 x[0, email.size] == email
             end
-            if candidates.size == 1
-                email = candidates.first
-            end
+            email = candidates.first if candidates.size == 1
         end
+
         unless @@invitations.include?(email)
-            respond(:error => 'no_invitation_found')
+            content_type :json
+            halt 404, { :error => 'no_invitation_found' }.to_json
         end
-        assert(@@invitations.include?(email), 'no_invitation_found')
 
-        tag = RandomTag::generate(12)
-        srand(Digest::SHA2.hexdigest(LOGIN_CODE_SALT).to_i + (Time.now.to_f * 1000000).to_i)
-        random_code = (0..5).map { |x| rand(10).to_s }.join('')
-        random_code = '123456' if DEVELOPMENT
-
-        # create user node if it doesn't already exist
+        # Create the user node before the login-request lock. Neo4j's uniqueness
+        # constraint keeps this idempotent even if two browsers arrive together.
         user = neo4j_query_expect_one(<<~END_OF_QUERY, :email => email)['n']
             MERGE (n:User {email: $email})
             RETURN n;
         END_OF_QUERY
+        user[:db_login] = Main.db_login_for_email(email)
         unless user[:name]
             name = @@invitations[email][:name]
             user = neo4j_query_expect_one(<<~END_OF_QUERY, :email => email, :name => name)['n']
@@ -1087,55 +2171,204 @@ class Main < Sinatra::Base
             END_OF_QUERY
         end
 
-        # remove all stale login requests
-        ts = Time.now.to_i - 60 * 10
-        neo4j_query(<<~END_OF_QUERY, {:ts => ts})
-            MATCH (l:LoginRequest)
-            WHERE COALESCE(l.ts_expiry, 0) < $ts
-            DETACH DELETE l;
-        END_OF_QUERY
-        # remove all pending login requests for this user
-        neo4j_query(<<~END_OF_QUERY, {:email => email})
-            MATCH (r:LoginRequest)-[:FOR]->(u:User {email: $email})
-            DETACH DELETE r;
-        END_OF_QUERY
-        # add new login requests for this user
-        neo4j_query_expect_one(<<~END_OF_QUERY, {:email => email, :tag => tag, :code => random_code, :now => Time.now.to_i})
-            MATCH (u:User {email: $email})
-            CREATE (r:LoginRequest)-[:FOR]->(u)
-            SET r.tag = $tag
-            SET r.code = $code
-            SET r.ts_expiry = $now
-            RETURN u.email;
-        END_OF_QUERY
-        broadcast_login_codes()
+        login_request = @@login_request_mutex.synchronize do
+            cleanup_login_requests
+            now = Time.now.to_i
+            minimum_expiry = now + Authentication::LOGIN_REQUEST_RESEND_SECONDS
+            existing_params = {
+                :email => email,
+                :minimum_expiry => minimum_expiry,
+                :max_attempts => Authentication::LOGIN_REQUEST_MAX_ATTEMPTS,
+            }
+            existing = neo4j_query(<<~END_OF_QUERY, existing_params).to_a.first
+                MATCH (r:LoginRequest)-[:FOR]->(u:User {email: $email})
+                WHERE r.expires_at > $minimum_expiry
+                  AND COALESCE(r.attempts, 0) < $max_attempts
+                RETURN r
+                ORDER BY r.created_at DESC
+                LIMIT 1;
+            END_OF_QUERY
 
-        STDERR.puts "Sending login code #{random_code} to #{email}... go to /l/#{tag}/#{random_code} to log in."
-        deliver_mail do
-            to email
-            # bcc SMTP_FROM
-            from SMTP_FROM
+            rate_state = neo4j_query_expect_one(<<~END_OF_QUERY, :email => email)
+                MATCH (u:User {email: $email})
+                RETURN COALESCE(u.login_request_created_at, 0) AS last_created_at;
+            END_OF_QUERY
 
-            subject "Dein Anmeldecode lautet #{random_code}"
+            if existing
+                request_node = existing['r']
+                resend = now - request_node[:last_sent_at].to_i >= Authentication::LOGIN_REQUEST_RESEND_SECONDS
+                if resend
+                    neo4j_query(<<~END_OF_QUERY, {:tag => request_node[:tag], :now => now})
+                        MATCH (r:LoginRequest {tag: $tag})
+                        SET r.last_sent_at = $now;
+                    END_OF_QUERY
+                end
+                {
+                    :tag => request_node[:tag],
+                    :code => request_node[:code],
+                    :send_mail => resend,
+                }
+            else
+                last_created_at = rate_state['last_created_at'].to_i
+                if now - last_created_at < Authentication::LOGIN_REQUEST_RESEND_SECONDS
+                    next { :rate_limited => true }
+                end
 
-            StringIO.open do |io|
-                io.puts "<p>Hallo!</p>"
-                io.puts "<p>Dein Anmeldecode lautet:</p>"
-                io.puts "<p style='font-size: 200%;'>#{random_code}</p>"
-                io.puts "<p>Der Code ist für zehn Minuten gültig. Nachdem du dich angemeldet hast, bleibst du für ein ganzes Jahr angemeldet (falls du dich nicht wieder abmeldest).</p>"
-                io.puts "<p>Falls du diese E-Mail nicht angefordert hast, hat jemand versucht, sich mit deiner E-Mail-Adresse auf <a href='https://#{WEBSITE_HOST}/'>https://#{WEBSITE_HOST}/</a> anzumelden. In diesem Fall musst du nichts weiter tun (es sei denn, du befürchtest, dass jemand anderes Zugriff auf dein E-Mail-Konto hat – dann solltest du dein E-Mail-Passwort ändern).</p>"
-                io.puts "<p>Viele Grüße,<br />Fabian Wandtke</p>"
-                io.string
+                # Replace a nearly-expired request rather than handing the browser
+                # a code that may stop working a few seconds later.
+                neo4j_query(<<~END_OF_QUERY, {:email => email})
+                    MATCH (r:LoginRequest)-[:FOR]->(u:User {email: $email})
+                    DETACH DELETE r;
+                END_OF_QUERY
+
+                tag = RandomTag::generate(12)
+                code = Authentication.generate_login_code(:development => DEVELOPMENT)
+                expires_at = Authentication.login_request_expires_at(:now => now)
+                create_request_params = {
+                    :email => email,
+                    :tag => tag,
+                    :code => code,
+                    :created_at => now,
+                    :expires_at => expires_at,
+                }
+                neo4j_query_expect_one(<<~END_OF_QUERY, create_request_params)
+                    MATCH (u:User {email: $email})
+                    SET u.login_request_created_at = $created_at
+                    CREATE (r:LoginRequest)-[:FOR]->(u)
+                    SET r.tag = $tag,
+                        r.code = $code,
+                        r.created_at = $created_at,
+                        r.last_sent_at = $created_at,
+                        r.expires_at = $expires_at,
+                        r.attempts = 0
+                    RETURN u.email;
+                END_OF_QUERY
+                { :tag => tag, :code => code, :send_mail => true }
             end
         end
-        respond(:ok => 'yay', :tag => tag)
+
+        if login_request[:rate_limited]
+            content_type :json
+            halt 429, { :error => 'login_request_rate_limited' }.to_json
+        end
+
+        broadcast_login_codes()
+
+        if login_request[:send_mail] && !email.include?('@example.com')
+            if DEVELOPMENT
+                STDERR.puts 'Not sending login code email in development mode.'
+            else
+                STDERR.puts 'Sending login code email to invited user.'
+                deliver_mail do
+                    to email
+                    # bcc SMTP_FROM
+                    from SMTP_FROM
+
+                    subject "Dein Anmeldecode lautet #{login_request[:code]}"
+
+                    StringIO.open do |io|
+                        io.puts "<p>Hallo!</p>"
+                        io.puts "<p>Dein Anmeldecode lautet:</p>"
+                        io.puts "<p style='font-size: 200%;'>#{login_request[:code]}</p>"
+                        io.puts "<p>Der Code ist für zehn Minuten gültig. Nachdem du dich angemeldet hast, bleibst du für ein ganzes Jahr angemeldet (falls du dich nicht wieder abmeldest).</p>"
+                        io.puts "<p>Falls du diese E-Mail nicht angefordert hast, hat jemand versucht, sich mit deiner E-Mail-Adresse auf <a href='https://#{WEBSITE_HOST}/'>https://#{WEBSITE_HOST}/</a> anzumelden. In diesem Fall musst du nichts weiter tun (es sei denn, du befürchtest, dass jemand anderes Zugriff auf dein E-Mail-Konto hat – dann solltest du dein E-Mail-Passwort ändern).</p>"
+                        io.puts "<p>Viele Grüße,<br />Michael Specht</p>"
+                        io.string
+                    end
+                end
+            end
+        end
+        respond(:ok => 'yay', :tag => login_request[:tag])
+    end
+
+    post '/api/complete_login' do
+        data = parse_request_data(:required_keys => [:tag, :code])
+        tag = data[:tag].downcase.strip
+        code = data[:code].strip
+
+        unless Authentication.valid_login_tag?(tag) && Authentication.valid_login_code?(code)
+            content_type :json
+            halt 401, { :error => 'invalid_login_code' }.to_json
+        end
+
+        login_result = @@login_request_mutex.synchronize do
+            now = Time.now.to_i
+            row = neo4j_query(<<~END_OF_QUERY, :tag => tag).to_a.first
+                MATCH (r:LoginRequest {tag: $tag})-[:FOR]->(u:User)
+                RETURN r, u;
+            END_OF_QUERY
+
+            next nil unless row
+
+            request_node = row['r']
+            unless Authentication.login_request_active?(
+                :expires_at => request_node[:expires_at],
+                :attempts => request_node[:attempts],
+                :now => now,
+            )
+                neo4j_query(<<~END_OF_QUERY, :tag => tag)
+                    MATCH (r:LoginRequest {tag: $tag})
+                    DETACH DELETE r;
+                END_OF_QUERY
+                next nil
+            end
+
+            unless request_node[:code].to_s == code
+                attempts = request_node[:attempts].to_i + 1
+                if attempts >= Authentication::LOGIN_REQUEST_MAX_ATTEMPTS
+                    neo4j_query(<<~END_OF_QUERY, :tag => tag)
+                        MATCH (r:LoginRequest {tag: $tag})
+                        DETACH DELETE r;
+                    END_OF_QUERY
+                else
+                    neo4j_query(<<~END_OF_QUERY, {:tag => tag, :attempts => attempts})
+                        MATCH (r:LoginRequest {tag: $tag})
+                        SET r.attempts = $attempts;
+                    END_OF_QUERY
+                end
+                next nil
+            end
+
+            sid = RandomTag::generate(24)
+            session_expires = (DateTime.now + Authentication::SESSION_LIFETIME_DAYS).to_s
+            complete_params = {
+                :tag => tag,
+                :code => code,
+                :now => now,
+                :max_attempts => Authentication::LOGIN_REQUEST_MAX_ATTEMPTS,
+                :sid => sid,
+                :session_expires => session_expires,
+            }
+            neo4j_query_expect_one(<<~END_OF_QUERY, complete_params)
+                MATCH (r:LoginRequest {tag: $tag, code: $code})-[:FOR]->(u:User)
+                WHERE r.expires_at > $now
+                  AND COALESCE(r.attempts, 0) < $max_attempts
+                DETACH DELETE r
+                WITH u
+                REMOVE u.login_request_created_at
+                CREATE (s:Session {sid: $sid, expires: $session_expires})-[:FOR]->(u)
+                RETURN s.sid AS sid, u.email AS email, u.server_sid AS server_sid;
+            END_OF_QUERY
+        end
+
+        broadcast_login_codes()
+
+        unless login_result
+            content_type :json
+            halt 401, { :error => 'invalid_login_code' }.to_json
+        end
+
+        expires = session_cookie_expiry
+        set_session_cookie(login_result['sid'], expires)
+        set_server_sid_cookie(login_result['server_sid'], expires) if login_result['server_sid']
+        respond(:ok => 'yay')
     end
 
     post '/api/impersonate' do
         assert(admin_logged_in?)
         data = parse_request_data(:required_keys => [:email])
         email = data[:email]
-        sid = request.cookies['hs_sid']
+        sid = current_session_sid
         neo4j_query(<<~END_OF_STRING, {:sid => sid, :email => email})
             MATCH (s:Session {sid: $sid})-[r:FOR]->(:User), (u:User {email: $email})
             DELETE r
@@ -1145,157 +2378,224 @@ class Main < Sinatra::Base
     end
 
     def get_server_state(tag)
-        result = {}
-        result[:tag] = tag
-        result[:running] = false
-        inspect = JSON.parse(`docker inspect hs_code_#{tag}`)
-        unless inspect.empty?
-            result[:running] = true
-            result[:ip] = inspect.first['NetworkSettings']['Networks']['bridge']['IPAddress']
-        end
-        result
+        workspace_runtime.workspace_state(
+            tag,
+            :timeout => shell_timeout(:docker_inspect),
+        )
     end
 
     def self.gen_password_for_email(email, salt)
-        chars = 'BCDFGHJKMNPQRSTVWXYZ23456789'.split('')
-        sha2 = Digest::SHA256.new()
-        sha2 << salt
-        sha2 << email
-        srand(sha2.hexdigest.to_i(16))
-        password = ''
-        8.times do
-            c = chars.sample.dup
-            c.downcase! if [0, 1].sample == 1
-            password += c
+        WorkspaceCredentials.password_for_email(email, salt)
+    end
+
+    def self.db_login_for_email(email)
+        DatabaseIdentity::Neo4jAllocator.new($neo4j).allocate!(email)
+    end
+
+    def db_login_for_email(email)
+        Main.db_login_for_email(email)
+    end
+
+    def self.init_mysql(email, db_login)
+        DatabaseIdentity.validate!(db_login)
+        mysql_password = Main.gen_password_for_email(email, MYSQL_PASSWORD_SALT)
+        STDERR.puts "Setting up MySQL user #{db_login} with database #{db_login}"
+        Open3.popen2("docker exec -i workspace_mysql_1 mysql --user=root --password=#{MYSQL_ROOT_PASSWORD}") do |stdin, stdout, wait_thr|
+            DatabaseProvisioning.mysql_statements(db_login, mysql_password)
+                .each { |statement| stdin.puts statement }
+            stdin.close
+            status = wait_thr.value
+            raise "MySQL provisioning failed for #{db_login}" unless status.success?
         end
-        password += '-'
-        4.times do
-            c = chars.sample.dup
-            c.downcase! if [0, 1].sample == 1
-            password += c
-        end
-        password
     end
 
     def init_mysql(email)
-        mysql_password = Main.gen_password_for_email(email, MYSQL_PASSWORD_SALT)
-        login = email.split('@').first.downcase
-        STDERR.puts "Setting up MySQL user #{login} with database #{login}"
-        Open3.popen2("docker exec -i workspace_mysql_1 mysql --user=root --password=#{MYSQL_ROOT_PASSWORD}") do |stdin, stdout, wait_thr|
-            stdin.puts "CREATE USER IF NOT EXISTS '#{login}'@'%' identified by '#{mysql_password}';"
-            stdin.puts "CREATE DATABASE IF NOT EXISTS `#{login}`;"
-            stdin.puts "GRANT ALL ON `#{login}`.* TO '#{login}'@'%';"
-            stdin.puts "FLUSH PRIVILEGES;"
-            stdin.close
-            wait_thr.value
-        end
+        Main.init_mysql(email, db_login_for_email(email))
     end
 
     def reset_mysql(email)
-        login = email.split('@').first.downcase
-        STDERR.puts "Removing database for MySQL user #{login}"
+        db_login = db_login_for_email(email)
+        STDERR.puts "Removing database for MySQL user #{db_login}"
         Open3.popen2("docker exec -i workspace_mysql_1 mysql --user=root --password=#{MYSQL_ROOT_PASSWORD}") do |stdin, stdout, wait_thr|
-            stdin.puts "DROP DATABASE IF EXISTS `#{login}`;"
+            stdin.puts "DROP DATABASE IF EXISTS `#{db_login}`;"
             stdin.close
-            wait_thr.value
+            status = wait_thr.value
+            raise "MySQL reset failed for #{db_login}" unless status.success?
         end
-        init_mysql(email)
+        Main.init_mysql(email, db_login)
     end
 
-    def init_postgres(email)
-        postgres_password = Main.gen_password_for_email(email, POSTGRES_PASSWORD_SALT)
-        login = email.split('@').first.downcase
-        STDERR.puts "Setting up Postgres user #{login} with database #{login}"
+    def self.init_neo4j(email, db_login)
+        DatabaseIdentity.validate!(db_login)
+        neo4j_password = Main.gen_password_for_email(email, NEO4J_PASSWORD_SALT)
+        STDERR.puts "Setting up Neo4j user #{db_login} with database #{db_login}"
 
-        Open3.popen2("docker exec -i -e PGPASSWORD=#{POSTGRES_ROOT_PASSWORD} workspace_postgres_1 psql --user=postgres") do |stdin, stdout, wait_thr|
+        Open3.popen2("docker exec -i workspace_neo4j_1 bin/cypher-shell -u neo4j -p #{NEO4J_ROOT_PASSWORD}") do |stdin, stdout, wait_thr|
+            DatabaseProvisioning.neo4j_statements(db_login, neo4j_password)
+                .each { |statement| stdin.puts statement }
+            stdin.close
+            status = wait_thr.value
+            raise "Neo4j provisioning failed for #{db_login}" unless status.success?
+        end
+    end
+
+    def init_neo4j(email)
+        Main.init_neo4j(email, db_login_for_email(email))
+    end
+
+    def reset_neo4j(email)
+        db_login = db_login_for_email(email)
+        role = DatabaseProvisioning.neo4j_role_name(db_login)
+        Open3.popen2("docker exec -i workspace_neo4j_1 bin/cypher-shell -u neo4j -p #{NEO4J_ROOT_PASSWORD}") do |stdin, stdout, wait_thr|
             stdin.puts <<~END_OF_STRING
-                CREATE USER \"#{login}\" WITH ENCRYPTED PASSWORD '#{postgres_password}';
-                CREATE DATABASE \"#{login}\";
-                ALTER DATABASE \"#{login}\" OWNER TO \"#{login}\";
-                REVOKE ALL PRIVILEGES ON DATABASE \"#{login}\" FROM public;
+                DROP DATABASE `#{db_login}` IF EXISTS;
+                DROP USER `#{db_login}` IF EXISTS;
+                DROP ROLE `#{role}` IF EXISTS;
             END_OF_STRING
             stdin.close
-            wait_thr.value
+            status = wait_thr.value
+            raise "Neo4j reset failed for #{db_login}" unless status.success?
+        end
+        Main.init_neo4j(email, db_login)
+    end
+
+    def with_timing(label)
+        t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        # STDERR.puts ">>> BEGIN #{label}"
+        result = yield
+        dt = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+        STDERR.puts ">>> COMPLETED #{label} (#{format('%.3f', dt)}s)"
+        result
+    rescue => e
+        dt = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0 rescue 0
+        STDERR.puts ">>> ERROR #{label} after #{format('%.3f', dt)}s: #{e.class}: #{e.message}"
+        raise
+    end
+
+    WORKSPACE_UID = 1000
+    WORKSPACE_GID = 1000
+
+    # Turn the requested value into a portable Unix login name. The container
+    # init script validates this again before renaming the image's build-time
+    # `abc` account. Keep this deterministic so logs are readable.
+    def self.sanitize_workspace_login(value)
+        login = value.to_s.downcase
+        login = login.gsub(/[^a-z0-9._-]+/, '-').gsub(/\A[.-]+|[.-]+\z/, '')
+        login = 'student' if login.empty?
+        login = "user-#{login}" unless login.match?(/\A[a-z_]/)
+        login[0, 32]
+    end
+
+    def self.workspace_login_for_email(email)
+        screenshot_email = ENV['TUTORIAL_SCREENSHOT_EMAIL'].to_s
+        screenshot_user = ENV['TUTORIAL_SCREENSHOT_WORKSPACE_USER'].to_s
+        if DEVELOPMENT && !screenshot_email.empty? &&
+            email.to_s.casecmp?(screenshot_email) && !screenshot_user.empty?
+            return sanitize_workspace_login(screenshot_user)
+        end
+
+        sanitize_workspace_login(email.to_s.split('@', 2).first)
+    end
+
+    def workspace_login_for_email(email)
+        Main.workspace_login_for_email(email)
+    end
+
+    def ensure_user_directory(path)
+        FileUtils.mkdir_p(path)
+
+        # Only change the directories on the path, never recursively visit files.
+        current = path
+        while current.start_with?('/user/')
+            File.chown(WORKSPACE_UID, WORKSPACE_GID, current)
+            break if File.dirname(current) == '/user'
+            current = File.dirname(current)
         end
     end
 
-    def reset_postgres(email)
-        STDERR.puts "Removing database for Postgres user #{email}"
-        login = email.split('@').first.downcase
-        Open3.popen2("docker exec -i -e PGPASSWORD=#{POSTGRES_ROOT_PASSWORD} workspace_postgres_1 psql --user=postgres") do |stdin, stdout, wait_thr|
-            stdin.puts <<~END_OF_STRING
-                DROP DATABASE IF EXISTS "#{login}" WITH (FORCE);
-            END_OF_STRING
-            stdin.close
-            wait_thr.value
-        end
-        init_postgres(email)
+    def chown_user_file(path)
+        File.chown(WORKSPACE_UID, WORKSPACE_GID, path) if File.exist?(path)
     end
 
-    # def init_neo4j(email)
-    #     neo4j_password = Main.gen_password_for_email(email, NEO4J_PASSWORD_SALT)
-    #     login = email.split('@').first.downcase
-    #     database = login.gsub('.', '_')
-    #     STDERR.puts "Setting up Neo4j user #{login} with database #{login}"
-    #     Open3.popen2("docker exec -i workspace_neo4j_user_1 bin/cypher-shell -u neo4j -p #{NEO4J_ROOT_PASSWORD}") do |stdin, stdout, wait_thr|
-    #         stdin.puts <<~END_OF_STRING
-    #             CREATE DATABASE #{database} IF NOT EXISTS;
-    #             CREATE USER #{login} IF NOT EXISTS SET PLAINTEXT PASSWORD '#{neo4j_password}' CHANGE NOT REQUIRED
-    #             SET HOME DATABASE #{database};
-    #             GRANT ROLE architect TO #{login};
-    #         END_OF_STRING
-    #         stdin.close
-    #         wait_thr.value
-    #     end
-    # end
-
-    # def reset_neo4j(email)
-    #     login = email.split('@').first.downcase
-    #     database = login.gsub('.', '_')
-    #     Open3.popen2("docker exec -i workspace_neo4j_user_1 bin/cypher-shell -u neo4j -p #{NEO4J_ROOT_PASSWORD}") do |stdin, stdout, wait_thr|
-    #         stdin.puts <<~END_OF_STRING
-    #             DROP DATABASE #{database} IF EXISTS;
-    #         END_OF_STRING
-    #         stdin.close
-    #         wait_thr.value
-    #     end
-    #     init_neo4j(email)
-    # end
-
-    def start_server(email, test_tag = nil)
+    def start_server(email, test_tag = nil, server_tag: nil)
         email_with_test_tag = "#{email}#{test_tag}"
         container_name = fs_tag_for_email(email_with_test_tag)
+        persisted_db_login = db_login_for_email(email)
+        database_email = test_tag ? "#{email}-#{test_tag}" : email
+        database_login = if test_tag
+            DatabaseIdentity.ephemeral_login(persisted_db_login, test_tag)
+        else
+            persisted_db_login
+        end
 
         STDERR.puts ">>> Starting server with email #{email_with_test_tag} and container name #{container_name}"
 
-        system("mkdir -p /user/#{container_name}/config")
-        system("mkdir -p /user/#{container_name}/workspace")
-        if File.exist?("/user/#{container_name}/workspace/.bashrc")
-            contents = File.read("/user/#{container_name}/workspace/.bashrc")
-            unless contents.include?('GEM_HOME')
-                system("echo 'export GEM_HOME=\"$HOME/.gem\"' >> /user/#{container_name}/workspace/.bashrc")
-            end
+        user_path = "/user/#{container_name}"
+        config_path = "#{user_path}/config"
+        workspace_path = "#{user_path}/workspace"
+
+        FileUtils.mkdir_p(user_path)
+        FileUtils.mkdir_p(config_path)
+        FileUtils.mkdir_p(workspace_path)
+
+        # These are bind-mounted into the code-server container, whose user runs
+        # as UID/GID 1000. Only chown the mount points themselves here; never walk
+        # the whole workspace on every launch.
+        [user_path, config_path, workspace_path].each do |path|
+            File.chown(1000, 1000, path)
         end
-        # touch this file so that housekeeping won't shut down the server immediately
-        File.open("/user/#{container_name}/workspace/.hackschule", 'w') do |f|
+
+        # Files written by this Ruby process are created as root, so explicitly
+        # hand them to the code-server user after creating/updating them.
+        chown_user_file = lambda do |path|
+            File.chown(1000, 1000, path) if File.exist?(path)
+        end
+
+        bashrc_path = "#{workspace_path}/.bashrc"
+        if File.exist?(bashrc_path)
+            contents = File.read(bashrc_path)
+            unless contents.include?('GEM_HOME')
+                File.open(bashrc_path, 'a') do |f|
+                    f.puts 'export GEM_HOME="$HOME/.gem"'
+                end
+            end
+            chown_user_file.call(bashrc_path)
+        end
+
+        # Touch/update this file so housekeeping won't shut down the server immediately.
+        hackschule_path = "#{workspace_path}/.hackschule"
+        File.open(hackschule_path, 'w') do |f|
             f.puts "https://youtu.be/Akaa9xHaw7E"
         end
-        system("touch /user/#{container_name}/workspace/.hackschule")
-        
-        unless File.exist?("/user/#{container_name}/workspace/.my.cnf")
-            File.open("/user/#{container_name}/workspace/.my.cnf", 'w') do |f|
+        chown_user_file.call(hackschule_path)
+
+        gitconfig_path = "#{workspace_path}/.gitconfig"
+        unless File.exist?(gitconfig_path)
+            File.open(gitconfig_path, 'w') do |f|
                 f.puts <<~END_OF_STRING
-                    [client]
-                    user = #{email.split('@').first.downcase}
-                    password = #{Main.gen_password_for_email(email, MYSQL_PASSWORD_SALT)}
-                    host = mysql
-                    database = #{email.split('@').first.downcase}
-                    port = 3306
+                    [init]
+                        defaultBranch = main
+                    [user]
+                        name = #{@@invitations[email][:name] || email.split('@').first}
+                        email = #{email}
+                    [core]
+                        editor = nano
                 END_OF_STRING
             end
         end
-        unless File.exist?("/user/#{container_name}/workspace/.myclirc")
-            File.open("/user/#{container_name}/workspace/.myclirc", 'w') do |f|
+        chown_user_file.call(gitconfig_path)
+
+        my_cnf_path = "#{workspace_path}/.my.cnf"
+        DatabaseProvisioning.sync_my_cnf(
+            my_cnf_path,
+            database_login,
+            Main.gen_password_for_email(database_email, MYSQL_PASSWORD_SALT),
+        )
+        chown_user_file.call(my_cnf_path)
+
+        myclirc_path = "#{workspace_path}/.myclirc"
+        unless File.exist?(myclirc_path)
+            File.open(myclirc_path, 'w') do |f|
                 f.puts <<~END_OF_STRING
                     [main]
 
@@ -1305,7 +2605,7 @@ class Main < Sinatra::Base
 
                     # Multi-line mode allows breaking up the sql statements into multiple lines. If
                     # this is set to True, then the end of the statements must have a semi-colon.
-                    # If this is set to False then sql statements can't be split into multiple
+                    # If this is set to False then sql statements can't be split over multiple
                     # lines. End of line (return) is considered as the end of the statement.
                     multi_line = True
 
@@ -1317,7 +2617,7 @@ class Main < Sinatra::Base
                     # log_file location.
                     log_file = ~/.mycli.log
 
-                    # Default log level. Possible values: "CRITICAL", "ERROR", "WARNING", "INFO"
+                    # Default log level. Possible values are "CRITICAL", "ERROR", "WARNING", "INFO"
                     # and "DEBUG". "NONE" disables logging.
                     log_level = INFO
 
@@ -1345,7 +2645,7 @@ class Main < Sinatra::Base
                     # Can be further modified in [colors]
                     syntax_style = default
 
-                    # Keybindings: Possible values: emacs, vi.
+                    # Keybindings: Possible values are emacs, vi.
                     # Emacs mode: Ctrl-A is home, Ctrl-E is end. All emacs keybindings are available in the REPL.
                     # When Vi mode is enabled you can use modal editing features offered by Vi in the REPL.
                     key_bindings = emacs
@@ -1458,106 +2758,179 @@ class Main < Sinatra::Base
                 END_OF_STRING
             end
         end
-        STDERR.puts ">>> Getting server state"
+        chown_user_file.call(myclirc_path)
 
-        state = get_server_state(container_name)
-        STDERR.puts ">>> Server state is #{state.to_yaml}"
+        # STDERR.puts ">>> Getting server state"
+        state = with_timing("start_server #{container_name}: docker inspect") do
+            get_server_state(container_name)
+        end
+        # STDERR.puts ">>> Server state is #{state.to_yaml}"
 
         unless state[:running]
-            config_path = "/user/#{container_name}/workspace/.local/share/code-server/User/settings.json"
-            unless File.exist?(config_path)
-                FileUtils.mkpath(File.dirname(config_path))
-                File.open(config_path, 'w') do |f|
+            vscode_settings_path = "#{workspace_path}/.local/share/code-server/User/settings.json"
+            ensure_user_directory(File.dirname(vscode_settings_path))
+
+            unless File.exist?(vscode_settings_path)
+                File.open(vscode_settings_path, 'w') do |f|
                     config = {}
-                    config['files.exclude'] ||= {}
-                    config['files.exclude']['**/.*'] = true
-                    config['files.autoSave']||= "off"
-                    config["window.menuBarVisibility"] ||= "classic"
-                    config['telemetry.telemetryLevel'] ||= 'off'
-                    if test_tag
-                        config['workbench.colorTheme'] = 'Tomorrow Night Blue'
-                    end
-                    f.write config.to_json
+                    config['workbench.colorTheme'] = 'Tomorrow Night Blue' if test_tag
+                    f.puts JSON.pretty_generate(config)
                 end
             end
+
+            user_config = JSON.parse(File.read(vscode_settings_path))
+            original_config = user_config.to_json
+            default_config = JSON.parse(File.read('default-vscode-settings.json'))
+
+            default_config.each_pair do |k, v|
+                if v == true || v == false
+                    user_config[k] = v unless user_config.include?(k)
+                else
+                    user_config[k] ||= v
+                end
+            end
+
+            if DEVELOPMENT && (
+                    email == 'student@example.com' ||
+                    email.match?(/\Ae2e-\d+@example\.com\z/)
+                )
+                user_config['terminal.integrated.gpuAcceleration'] = 'off'
+            end
+
+            if DEVELOPMENT && email.match?(/\Ae2e-\d+@example\.com\z/)
+                user_config['editor.autoIndent'] = 'none'
+                user_config['editor.formatOnType'] = false
+                user_config['editor.formatOnPaste'] = false
+            end
+
+            new_config = user_config.to_json
+            if original_config != new_config
+                File.open(vscode_settings_path, 'w') do |f|
+                    f.write JSON.pretty_generate(user_config)
+                end
+            end
+            chown_user_file.call(vscode_settings_path)
+
             if test_tag
-                config_path = "/user/#{container_name}/workspace/.local/share/code-server/coder.json"
-                unless File.exist?(config_path)
-                    FileUtils.mkpath(File.dirname(config_path))
-                    File.open(config_path, 'w') do |f|
-                        config = {}
-                        config['query'] ||= {}
-                        config['query']['folder'] = '/workspace'
+                coder_config_path = "#{workspace_path}/.local/share/code-server/coder.json"
+                ensure_user_directory(File.dirname(coder_config_path))
+
+                unless File.exist?(coder_config_path)
+                    File.open(coder_config_path, 'w') do |f|
+                        config = {
+                            'query' => {
+                                'folder' => '/workspace'
+                            }
+                        }
                         f.write config.to_json
                     end
                 end
+                chown_user_file.call(coder_config_path)
             end
-            # {
-            #     "query": {
-            #       "folder": "/workspace"
-            #     }
-            #   }
-            system("chown -R 1000:1000 /user/#{container_name}")
 
-            db_email = email
-            if test_tag
-                db_email = "#{email}-#{test_tag}"
-            end
-            STDERR.puts ">>> Initializing MySQL"
-            init_mysql(db_email)
-            STDERR.puts ">>> Initializing Postgres"
-            init_postgres(db_email)
-            # init_neo4j(db_email)
+            STDERR.puts ">>> Enqueuing database initialization for #{database_login}"
+            Main.enqueue_database_init(
+                :email => database_email,
+                :db_login => database_login,
+            )
 
             if test_tag
-                test_init_mark_path = "/user/#{container_name}/workspace/.test_init"
+                test_init_mark_path = "#{workspace_path}/.test_init"
+
                 unless File.exist?(test_init_mark_path)
                     sha1 = neo4j_query_expect_one(<<~END_OF_QUERY, {:test_tag => test_tag})['f.sha1']
                         MATCH (t:Test {tag: $test_tag})-[:USES]->(f:File)
                         RETURN f.sha1;
                     END_OF_QUERY
-                    # unpack files from archive
-                    system("tar xf /internal/test_archives/#{sha1} -C /user/#{container_name}/workspace")
-                    File.open(test_init_mark_path, 'w') do |f|
+
+                    # Unpack files from archive.
+                    with_timing("start_server #{container_name}: unpack test archive") do
+                        shell_ok(
+                            "tar xf /internal/test_archives/#{sha1} -C #{workspace_path}",
+                            :timeout => shell_timeout(:tar)
+                        )
                     end
-                    # check if we have a config file in the archive
-                    if File.exist?("/user/#{container_name}/workspace/.workspace/config.yaml")
-                        config = YAML.load(File.read("/user/#{container_name}/workspace/.workspace/config.yaml"))
+
+                    # Test archives may contain arbitrary nested files. This is the one
+                    # place where a recursive ownership fix is necessary, and it only
+                    # happens once when the archive is initially unpacked.
+                    with_timing("start_server #{container_name}: chown unpacked test archive") do
+                        shell_ok(
+                            "chown -R 1000:1000 #{workspace_path}",
+                            :timeout => shell_timeout(:chown)
+                        )
+                    end
+
+                    File.open(test_init_mark_path, 'w') do |_f|
+                    end
+                    chown_user_file.call(test_init_mark_path)
+
+                    # Check if we have a config file in the archive.
+                    workspace_config_path = "#{workspace_path}/.workspace/config.yaml"
+                    if File.exist?(workspace_config_path)
+                        config = YAML.load(File.read(workspace_config_path))
                         if config['vscode_config']
-                            config_path = "/user/#{container_name}/workspace/.local/share/code-server/User/settings.json"
-                            vscode_config = JSON.parse(File.read(config_path))
+                            vscode_config = JSON.parse(File.read(vscode_settings_path))
                             vscode_config.merge!(config['vscode_config'])
-                            File.open(config_path, 'w') do |f|
+
+                            File.open(vscode_settings_path, 'w') do |f|
                                 f.write vscode_config.to_json
                             end
+                            chown_user_file.call(vscode_settings_path)
                         end
                     end
                 end
             end
 
-            network_name = "bridge"
-            STDERR.puts ">>> Getting IP addresses for mysql and postgres..."
-            mysql_ip = `docker inspect workspace_mysql_1`.split('"IPAddress": "')[1].split('"')[0]
-            postgres_ip = `docker inspect workspace_postgres_1`.split('"IPAddress": "')[1].split('"')[0]
-            STDERR.puts ">>> MySQL running #{mysql_ip}, Postgres running at #{postgres_ip}"
-            # neo4j_ip = `docker inspect workspace_neo4j_user_1`.split('"IPAddress": "')[1].split('"')[0]
-            login = email.split('@').first.downcase
-            mysql_login = db_email.split('@').first.downcase
-            STDERR.puts ">>> Login is #{login}, MySQL login is #{mysql_login}"
-            command = "docker run --add-host=mysql:#{mysql_ip} --add-host=postgres:#{postgres_ip} --cpus=2 -d --rm -e PUID=1000 -e GUID=1000 -e TZ=Europe/Berlin -e PWA_APPNAME=\"Workspace\" -e DEFAULT_WORKSPACE=/workspace -e MYSQL_HOST=\"mysql\" -e MYSQL_USER=\"#{mysql_login}\" -e MYSQL_PASSWORD=\"#{Main.gen_password_for_email(db_email, MYSQL_PASSWORD_SALT)}\" -e MYSQL_DATABASE=\"#{mysql_login}\" -e POSTGRES_HOST=\"postgres\" -e POSTGRES_USER=\"#{login}\" -e POSTGRES_PASSWORD=\"#{Main.gen_password_for_email(email, POSTGRES_PASSWORD_SALT)}\" -e POSTGRES_DATABASE=\"#{login}\"  -e NEO4J_HOST=\"neo4j\" -e NEO4J_USER=\"#{mysql_login}\" -e NEO4J_PASSWORD=\"#{Main.gen_password_for_email(mysql_login, NEO4J_PASSWORD_SALT)}\" -e NEO4J_DATABASE=\"#{mysql_login.gsub('.', '_')}\" -v #{PATH_TO_HOST_DATA}/user/#{container_name}/config:/config -v #{PATH_TO_HOST_DATA}/user/#{container_name}/workspace:/workspace --network #{network_name} #{test_tag ? '-v /dev/null:/etc/resolv.conf:ro' : ''} --name hs_code_#{container_name} hs_code_server"
-            STDERR.puts ">>> Command:\n#{command}"
-            system(command)
-            Main.refresh_nginx_config()
+            # STDERR.puts ">>> Getting IP address for mysql..."
+
+            workspace_login = Main.workspace_login_for_email(email)
+            database_environment = DatabaseProvisioning.workspace_environment(
+                database_login,
+                Main.gen_password_for_email(database_email, MYSQL_PASSWORD_SALT),
+                Main.gen_password_for_email(database_email, NEO4J_PASSWORD_SALT),
+            )
+
+            # STDERR.puts ">>> Workspace login is #{workspace_login}, database login is #{database_login}"
+
+            with_timing("start_server #{container_name}: docker run") do
+                workspace_runtime.start_workspace(
+                    :fs_tag => container_name,
+                    :workspace_login => workspace_login,
+                    :database_environment => database_environment,
+                    :host_data_path => PATH_TO_HOST_DATA,
+                    :test_mode => !test_tag.nil?,
+                    :timeout => shell_timeout(:docker_run),
+                )
+            end
+
+            with_timing("start_server #{container_name}: refresh nginx") do
+                Main.refresh_nginx_config()
+            end
         end
 
-        return "#{@session_user[:server_tag]}#{test_tag}"
+        return "#{server_tag}#{test_tag}" if server_tag
+
+        begin
+            "#{@session_user[:server_tag]}#{test_tag}"
+        rescue
+            ""
+        end
     end
 
     def stop_server(email)
         container_name = fs_tag_for_email(email)
 
-        system("docker kill hs_code_#{container_name}")
+        neo4j_query(<<~END_OF_QUERY, :email => email, :updated_at => Time.now.to_i)
+            MATCH (u:User {email: $email})-[:SHARES_LIVE_APP]->(s:LiveAppShare {active: TRUE})
+            SET s.active = FALSE, s.updated_at = $updated_at;
+        END_OF_QUERY
 
+        workspace_runtime.stop_workspace(
+            container_name,
+            :timeout => shell_timeout(:docker_kill),
+        )
+        Main.reconcile_live_apps!(:refresh_nginx => false)
         Main.refresh_nginx_config()
     end
 
@@ -1575,25 +2948,15 @@ class Main < Sinatra::Base
         respond(:yay => 'sure')
     end
 
-    post '/api/start_postgres' do
-        assert(user_logged_in?)
-        email = @session_user[:email]
-        init_postgres(email)
-        respond(:yay => 'sure')
-    end
-
-    post '/api/reset_postgres' do
-        assert(user_logged_in?)
-        email = @session_user[:email]
-        reset_postgres(email)
-        respond(:yay => 'sure')
-    end
-
     post '/api/start_neo4j' do
         assert(user_logged_in?)
         email = @session_user[:email]
         init_neo4j(email)
-        respond(:yay => 'sure')
+        user = neo4j_query_expect_one(<<~END_OF_QUERY, :email => email)['u']
+            MATCH (u:User {email: $email})
+            RETURN u;
+        END_OF_QUERY
+        respond(:yay => 'sure', :browser_url => "#{NEO4J_WEB_ROOT.sub('neo4j.', 'neo4j-' + user[:server_tag] + '.')}?dbms=bolt#{DEVELOPMENT ? '' : '+s'}://bolt.#{WEBSITE_HOST}#{DEVELOPMENT ? '' : ':443'}")
     end
 
     post '/api/reset_neo4j' do
@@ -1603,14 +2966,45 @@ class Main < Sinatra::Base
         respond(:yay => 'sure')
     end
 
+    post '/api/server_start_status' do
+        assert(user_logged_in?)
+        data = parse_request_data(:optional_keys => [:test_tag, :email])
+
+        email = @session_user[:email]
+        if data[:email] && teacher_logged_in?
+            email = data[:email]
+        end
+
+        key = Main.server_start_key(email, data[:test_tag])
+        respond(Main.server_start_status(key))
+    end
+
     post '/api/start_server' do
         assert(user_logged_in?)
         data = parse_request_data(:optional_keys => [:test_tag])
 
         email = @session_user[:email]
-        server_tag = start_server(email, data[:test_tag])
+        test_tag = data[:test_tag]
+        base_server_tag = @session_user[:server_tag]
+        server_tag = "#{base_server_tag}#{test_tag}"
 
-        respond(:yay => 'sure', :server_tag => server_tag)
+        job = Main.enqueue_server_start(
+            :email => email,
+            :test_tag => test_tag,
+            :server_tag => server_tag
+        ) do
+            start_server(email, test_tag, :server_tag => base_server_tag)
+        end
+
+        status = Main.wait_for_server_start_job(job)
+
+        respond(
+            :yay => 'sure',
+            :server_tag => server_tag,
+            :queued => ['queued', 'running'].include?(status[:status]),
+            :status => status[:status],
+            :error => status[:error]
+        )
     end
 
     post '/api/start_server_with_share_tag' do
@@ -1622,9 +3016,23 @@ class Main < Sinatra::Base
             RETURN u;
         END_OF_QUERY
 
-        start_server(user[:email])
+        job = Main.enqueue_server_start(
+            :email => user[:email],
+            :test_tag => nil,
+            :server_tag => user[:server_tag]
+        ) do
+            start_server(user[:email], nil, :server_tag => user[:server_tag])
+        end
 
-        respond(:yay => 'sure', :share_tag => user[:share_tag])
+        status = Main.wait_for_server_start_job(job)
+
+        respond(
+            :yay => 'sure',
+            :share_tag => user[:share_tag],
+            :queued => ['queued', 'running'].include?(status[:status]),
+            :status => status[:status],
+            :error => status[:error]
+        )
     end
 
     post '/api/start_server_as_admin' do
@@ -1640,32 +3048,51 @@ class Main < Sinatra::Base
 
         # create new WATCHING relationship
         watch_tag = RandomTag.generate(48)
-        neo4j_query_expect_one(<<~END_OF_QUERY, {:email_self => @session_user[:email], :email_other => email, :watch_tag => watch_tag})
+        target_user = neo4j_query_expect_one(<<~END_OF_QUERY, {:email_self => @session_user[:email], :email_other => email, :watch_tag => watch_tag})['u_other']
             MATCH (u_self:User {email: $email_self})
             MATCH (u_other:User {email: $email_other})
             CREATE (u_self)-[r:WATCHING]->(u_other)
             SET r.watch_tag = $watch_tag
-            RETURN r;
+            RETURN u_other;
         END_OF_QUERY
 
-        start_server(email)
-        Main.refresh_nginx_config()
+        job = Main.enqueue_server_start(
+            :email => email,
+            :test_tag => nil,
+            :server_tag => target_user[:server_tag],
+            :refresh_nginx_after => true
+        ) do
+            start_server(email, nil, :server_tag => target_user[:server_tag])
+        end
 
-        expires = Time.new + 3600 * 24 * 365
-        response.set_cookie('hs_watch_tag',
-            :domain => ".#{WEBSITE_HOST}",
-            :value => watch_tag,
-            :expires => expires,
-            :path => "/", #"/#{fs_tag_for_email(email)}",
-            :httponly => true,
-            :secure => DEVELOPMENT ? false : true)
-        respond(:yay => 'sure', :watch_tag => watch_tag)
+        status = Main.wait_for_server_start_job(job)
+
+        expires = session_cookie_expiry
+        response.set_cookie(
+            'hs_watch_tag',
+            Authentication.domain_cookie_options(
+                :value => watch_tag,
+                :expires => expires,
+                :domain => WEBSITE_HOST.split(':').first,
+                :development => DEVELOPMENT,
+            ),
+        )
+        respond(
+            :yay => 'sure',
+            :watch_tag => watch_tag,
+            :queued => ['queued', 'running'].include?(status[:status]),
+            :status => status[:status],
+            :error => status[:error]
+        )
     end
 
     post '/api/reset_server' do
         assert(user_logged_in?)
 
         email = @session_user[:email]
+        data = parse_request_data(:required_keys => [:confirmation])
+        assert(data[:confirmation] == email, 'confirmation_mismatch')
+
         stop_server(email)
         container_name = fs_tag_for_email(email)
         system("rm -rf /user/#{container_name}")
@@ -1724,7 +3151,7 @@ class Main < Sinatra::Base
     end
 
     def print_content_overview()
-        Main.parse_content if DEVELOPMENT
+        Main.refresh_content_catalog if DEVELOPMENT
         html = StringIO.open do |io|
             running_tests = my_running_tests()
             if running_tests.empty?
@@ -1733,7 +3160,7 @@ class Main < Sinatra::Base
                     next if section[:entries].reject do |entry|
                         (!DEVELOPMENT) && @@content[entry][:dev_only]
                     end.empty?
-                    io.puts "<h2><div class='squircle'><img src='#{section[:icon]}'></div> #{section[:label]}</h2>"
+                    io.puts "<h2><div class='squircle'><img alt='' src='#{section[:icon]}'></div> #{section[:label]}</h2>"
                     if section[:description]
                         io.puts "<p style='margin-top: -1em; margin-bottom: 1em;'>#{section[:description]}</p>"
                     end
@@ -1759,7 +3186,16 @@ class Main < Sinatra::Base
                         if content[:needs_contrast] == 'light'
                             additional_classes << 'dark-only-bg-contrast-light'
                         end
-                        io.puts "<img class='#{additional_classes.join(' ')}' src='#{(content[:image] || '/images/white.webp').sub('.webp', '-1024.webp')}' style='object-position: #{content[:image_x]}% #{content[:image_y]}%;'>"
+                        [content[:image], content[:image_dark]].compact.each do |image_url|
+                            Main.ensure_image_width(image_url, 1024)
+                        end
+                        image_style = "object-position: #{content[:image_x]}% #{content[:image_y]}%;"
+                        if content[:image_dark]
+                            io.puts "<img alt='' class='#{(additional_classes + ['theme-image-light']).join(' ')}' src='#{content[:image].sub('.webp', '-1024.webp')}' style='#{image_style}'>"
+                            io.puts "<img alt='' class='#{(additional_classes + ['theme-image-dark']).join(' ')}' src='#{content[:image_dark].sub('.webp', '-1024.webp')}' style='#{image_style}'>"
+                        else
+                            io.puts "<img alt='' class='#{additional_classes.join(' ')}' src='#{(content[:image] || '/images/white.webp').sub('.webp', '-1024.webp')}' style='#{image_style}'>"
+                        end
                         io.puts "<div class='shade'></div>"
                         io.puts "<div class='card-content'>"
                         io.puts "#{content[:dev_only] ? '<span class="badge badge-sm bg-danger">dev</span> ' : ''}<h4>#{content[:title]}</h4>"
@@ -1792,13 +3228,7 @@ class Main < Sinatra::Base
     def print_workspaces()
         assert(teacher_logged_in?)
 
-        # remove all stale login requests
-        ts = Time.now.to_i - 60 * 10
-        neo4j_query(<<~END_OF_QUERY, {:ts => ts})
-            MATCH (l:LoginRequest)
-            WHERE COALESCE(l.ts_expiry, 0) < $ts
-            DETACH DELETE l;
-        END_OF_QUERY
+        cleanup_login_requests
 
         email_for_tag = {}
         registered_emails = []
@@ -1817,16 +3247,9 @@ class Main < Sinatra::Base
 
         STDERR.puts "email_for_tag: #{email_for_tag.to_yaml}"
 
-        info_for_tag = {}
-        JSON.parse(`docker inspect workspace`).each do |entry|
-            entry['Containers'].each_pair do |id, container|
-                name = container['Name']
-                next unless name[0, 8] == 'hs_code_'
-                info_for_tag[name.sub('hs_code_', '')] = {
-                    :ip => container['IPv4Address'],
-                }
-            end
-        end
+        info_for_tag = workspace_runtime.workspace_network_info(
+            :timeout => shell_timeout(:docker_inspect),
+        )
 
         StringIO.open do |io|
             io.puts "<div style='max-width: 100%; overflow-x: auto;'>"
@@ -1901,20 +3324,35 @@ class Main < Sinatra::Base
     end
 
     def broadcast_login_codes
-        return if @@clients.empty?
+        clients = @@admin_ws_mutex.synchronize do
+            @@clients.map do |client_id, ws|
+                [ws, @@email_for_client_id[client_id]]
+            end
+        end
+        return if clients.empty?
+
         lines = []
-        neo4j_query(<<~END_OF_STRING).each do |row|
+        active_params = {
+            :now => Time.now.to_i,
+            :max_attempts => Authentication::LOGIN_REQUEST_MAX_ATTEMPTS,
+        }
+        neo4j_query(<<~END_OF_STRING, active_params).each do |row|
             MATCH (l:LoginRequest)-[:FOR]->(u:User)
-            RETURN l.code, u.email
-            ORDER BY l.expiry;
+            WHERE l.expires_at > $now
+              AND COALESCE(l.attempts, 0) < $max_attempts
+            RETURN l.code, l.expires_at, u.email
+            ORDER BY l.expires_at;
         END_OF_STRING
             email = row['u.email']
             next if @@teachers.include?(email)
-            lines << { :email => email, :code => row['l.code'] }
+            lines << {
+                :email => email,
+                :code => row['l.code'],
+                :expires_at => row['l.expires_at'].to_i,
+            }
         end
-        @@clients.each_pair do |client_id, ws|
+        clients.each do |ws, ws_email|
             filtered_lines = lines.select do |line|
-                ws_email = @@email_for_client_id[client_id]
                 email = line[:email]
                 group = @@invitations[email][:group]
                 ADMIN_USERS.include?(ws_email) ||(@@teachers[ws_email] || Set.new()).include?(group)
@@ -1931,10 +3369,12 @@ class Main < Sinatra::Base
             ws.on(:open) do |event|
                 client_id = request.env['HTTP_SEC_WEBSOCKET_KEY']
                 ws.send({:hello => 'world'})
-                @@clients[client_id] = ws
-                @@email_for_client_id[client_id] = @session_user[:email]
-                @@client_ids_for_email[@session_user[:email]] ||= []
-                @@client_ids_for_email[@session_user[:email]] << client_id
+                @@admin_ws_mutex.synchronize do
+                    @@clients[client_id] = ws
+                    @@email_for_client_id[client_id] = @session_user[:email]
+                    @@client_ids_for_email[@session_user[:email]] ||= []
+                    @@client_ids_for_email[@session_user[:email]] << client_id
+                end
                 email_for_tag = {}
                 neo4j_query(<<~END_OF_STRING).each do |row|
                     MATCH (u:User) RETURN u.email;
@@ -1942,27 +3382,10 @@ class Main < Sinatra::Base
                     email = row['u.email']
                     email_for_tag[fs_tag_for_email(email)] = email
                 end
-                @@threads_for_client_id[client_id] ||= {}
-                @@threads_for_client_id[client_id][:docker_stats] ||= Thread.new do
-                    command = "docker stats --format \"{{ json . }}\""
-                    lines = {}
-                    count = 0
-                    IO.popen(command).each_line do |line|
-                        if line[0].ord == 0x1b
-                            count = (count + 1) % 2
-                            ws.send({:stats => lines}.to_json)
-                            lines = {}
-                            line = line[line.index('{'), line.size]
-                        end
-                        if line.include?(0x1b.chr)
-                            line = line[0, line.index(0x1b.chr)]
-                        end
-                        line.strip!
-                        next if line.empty?
-                        stat_line = JSON.parse(line)
-                        name = stat_line['Name']
-                        if name[0, 8] == 'hs_code_'
-                            fs_tag = name.sub('hs_code_', '')
+                docker_stats_thread = Thread.new do
+                    loop do
+                        lines = {}
+                        workspace_runtime.workspace_stats.each_pair do |fs_tag, stat_line|
                             email = email_for_tag[fs_tag]
                             lines[fs_tag] = {
                                 :name => (@@invitations[email] || {})[:name],
@@ -1970,9 +3393,11 @@ class Main < Sinatra::Base
                                 :stats => stat_line
                             }
                         end
+                        ws.send({:stats => lines}.to_json)
+                        sleep 1
                     end
                 end
-                @@threads_for_client_id[client_id][:host_stats] ||= Thread.new do
+                host_stats_thread = Thread.new do
                     loop do
                         data = {}
 
@@ -2011,29 +3436,48 @@ class Main < Sinatra::Base
                         data[:disk_user_total] = bytes_to_str(disk_total).sub('B', '').gsub(' ', '').gsub(/([A-Za-z]+)/, '<span class=\'unit\'>\1</span>')
                         data[:disk_user_used] = bytes_to_str(disk_used).sub('B', '').gsub(' ', '').gsub(/([A-Za-z]+)/, '<span class=\'unit\'>\1</span>')
                         data[:disk_user_percent] = (disk_used * 100.0 / disk_total * 100).to_i.to_f / 100
-                        
+
                         ws.send({:server_stats => data}.to_json)
 
                         sleep 5
                     end
                 end
+                keep_threads = @@admin_ws_mutex.synchronize do
+                    if @@clients.include?(client_id)
+                        @@threads_for_client_id[client_id] = {
+                            :docker_stats => docker_stats_thread,
+                            :host_stats => host_stats_thread,
+                        }
+                        true
+                    else
+                        false
+                    end
+                end
+                unless keep_threads
+                    docker_stats_thread.kill
+                    host_stats_thread.kill
+                end
                 broadcast_login_codes()
-                debug "Got #{@@clients.size} connected clients!"
+                client_count = @@admin_ws_mutex.synchronize { @@clients.size }
+                debug "Got #{client_count} connected clients!"
             end
 
             ws.on(:close) do |event|
                 client_id = request.env['HTTP_SEC_WEBSOCKET_KEY']
-                @@clients.delete(client_id) if @@clients.include?(client_id)
-                @@email_for_client_id.delete(client_id) if @@email_for_client_id.include?(client_id)
-                @@client_ids_for_email[@session_user[:email]].delete(client_id) if @@client_ids_for_email[@session_user[:email]].include?(client_id)
-                @@client_ids_for_email.delete(@session_user[:email]) if @@client_ids_for_email[@session_user[:email]].empty?
-                if @@threads_for_client_id.include?(client_id)
-                    @@threads_for_client_id[client_id].keys.each do |key|
-                        @@threads_for_client_id[client_id][key].kill
+                threads = nil
+                client_count = @@admin_ws_mutex.synchronize do
+                    @@clients.delete(client_id)
+                    @@email_for_client_id.delete(client_id)
+                    client_ids = @@client_ids_for_email[@session_user[:email]]
+                    if client_ids
+                        client_ids.delete(client_id)
+                        @@client_ids_for_email.delete(@session_user[:email]) if client_ids.empty?
                     end
-                    @@threads_for_client_id.delete(client_id)
+                    threads = @@threads_for_client_id.delete(client_id)
+                    @@clients.size
                 end
-                debug "Got #{@@clients.size} connected clients!"
+                (threads || {}).each_value { |thread| thread.kill }
+                debug "Got #{client_count} connected clients!"
             end
 
             ws.on(:message) do |msg|
@@ -2069,103 +3513,333 @@ class Main < Sinatra::Base
         redirect "#{WEB_ROOT}/tic80/export/1.1/#{tag}"
     end
 
-    get '/api/hs_get_all_stored_dirs_and_files' do
-        assert(user_logged_in?)
-        dirs = []
-        files = []
-        neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email]}).each do |row|
-            MATCH (u:User {email: $email})-[r:HAS]->(f:TIC80Dir)
-            RETURN f, r;
-        END_OF_STRING
-            dirs << {
-                :path => row['f'][:path],
-            }
-        end
-        neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email]}).each do |row|
-            MATCH (u:User {email: $email})-[r:HAS]->(f:TIC80File)
-            RETURN f, r;
-        END_OF_STRING
-            files << {
-                :path => row['f'][:path],
-                :sha1 => row['r'][:sha1],
-                :contents => Base64.encode64(File.read("/tic80/#{row['r'][:sha1][0, 2]}/#{row['r'][:sha1][2, row['r'][:sha1].size - 2]}")),
-            }
-        end
-        dirs.sort! do |a, b|
-            a[:path] <=> b[:path]
-        end
-        files.sort! do |a, b|
-            a[:path] <=> b[:path]
-        end
+    # TIC-80's authoritative filesystem lives in the user's real Workspace.
+    # In the code-server container this same directory is visible as /workspace/TIC-80.
+    TIC80_WORKSPACE_DIR = 'TIC-80'
+    TIC80_MAX_SYNC_BYTES = 64 * 1024 * 1024
 
-        respond(:dirs => dirs, :files => files)
+    def tic80_storage_paths(email)
+        container_name = fs_tag_for_email(email)
+        workspace_path = File.join('/user', container_name, 'workspace')
+        metadata_path = File.join('/internal', 'tic80', container_name)
+
+        ensure_user_directory(workspace_path)
+        FileUtils.mkdir_p(metadata_path)
+
+        {
+            :root => File.join(workspace_path, TIC80_WORKSPACE_DIR),
+            :lock => File.join(metadata_path, 'sync.lock'),
+        }
     end
 
-    post '/api/fs_write' do
-        assert(user_logged_in?)
-        max_size = 64 * 1024 * 1024
-        data = parse_request_data(:required_keys => [:path, :file], :types => {:path => String, :file => Hash}, :max_body_length => max_size, :max_string_length => max_size, :max_value_lengths => {:entry => max_size})
-        data[:path] = data[:path].gsub('//', '/')
-        data[:path] = '/com.nesbox.tic/TIC-80/' + data[:path] unless data[:path][0] == '/'
-        blob = Base64::decode64(data[:file]['contents'])
-        sha1 = Digest::SHA1.hexdigest(blob)[0, 16]
-        STDERR.puts "[FS_WRITE] #{data[:path]} / size #{data[:file]['contents'].size} / SHA1 #{sha1}"
-        path = "/tic80/#{sha1[0, 2]}/#{sha1[2, sha1.size - 2]}"
-        FileUtils.mkpath(File.dirname(path))
-        unless File.exist?(path)
-            File.open(path, 'w') do |f|
-                f.write(blob)
+    def tic80_fsync_dir(path)
+        File.open(path, File::RDONLY) do |dir|
+            dir.fsync
+        end
+    rescue Errno::EINVAL, Errno::EACCES, Errno::EISDIR
+        # Some filesystems/platforms do not support fsync on directories.
+    end
+
+    def tic80_recover_storage_unlocked!(paths)
+        root = paths[:root]
+        parent = File.dirname(root)
+        base = File.basename(root)
+
+        raise "TIC-80 storage root must not be a symlink: #{root}" if File.symlink?(root)
+        if File.exist?(root) && !File.directory?(root)
+            raise "TIC-80 storage root is not a directory: #{root}"
+        end
+
+        unless File.directory?(root)
+            backups = Dir.glob(File.join(parent, "#{base}.backup-*")).select do |path|
+                File.directory?(path) && !File.symlink?(path)
+            end
+            stages = Dir.glob(File.join(parent, "#{base}.sync-*")).select do |path|
+                File.directory?(path) && !File.symlink?(path)
+            end
+
+            candidate = (backups + stages).max_by do |path|
+                File.mtime(path) rescue Time.at(0)
+            end
+
+            if candidate
+                STDERR.puts ">>> TIC-80: recovering #{candidate} -> #{root}"
+                File.rename(candidate, root)
+            else
+                FileUtils.mkdir_p(root)
             end
         end
-        neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email], :path => data[:path], :sha1 => sha1})
-            MATCH (u:User {email: $email})
-            WITH u
-            MERGE (f:TIC80File {path: $path})
-            WITH u, f
-            MERGE (u)-[r:HAS]->(f)
-            SET r.sha1 = $sha1
-            RETURN f;
-        END_OF_STRING
+
+        # Leftovers can only come from an interrupted/already-completed swap.
+        # We hold the per-user lock here, so no live TIC-80 sync owns them.
+        Dir.glob(File.join(parent, "#{base}.backup-*")).each { |path| FileUtils.rm_rf(path) }
+        Dir.glob(File.join(parent, "#{base}.sync-*")).each { |path| FileUtils.rm_rf(path) }
+
+        File.chown(WORKSPACE_UID, WORKSPACE_GID, root)
     end
 
-    post '/api/fs_delfile' do
-        assert(user_logged_in?)
-        data = parse_request_data(:required_keys => [:path], :types => {:path => String})
-        data[:path] = data[:path].gsub('//', '/')
-        data[:path] = '/com.nesbox.tic/TIC-80/' + data[:path] unless data[:path][0] == '/'
-        STDERR.puts "[FS_DELFILE] #{data[:path]}"
-        neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email], :path => data[:path]})
-            MATCH (u:User {email: $email})-[r:HAS]->(f:TIC80File {path: $path})
-            DELETE r;
-        END_OF_STRING
+    def tic80_relative_path(path)
+        raise ArgumentError, 'path must be a string' unless path.is_a?(String)
+        raise ArgumentError, 'path contains a NUL byte' if path.include?("\0")
+        raise ArgumentError, 'path is too long' if path.bytesize > 4096
+
+        value = path.tr('\\', '/')
+        raise ArgumentError, 'absolute paths are not allowed' if value.start_with?('/')
+
+        parts = value.split('/').reject(&:empty?)
+        raise ArgumentError, 'empty path is not allowed' if parts.empty?
+
+        parts.each do |part|
+            raise ArgumentError, 'path traversal is not allowed' if part == '.' || part == '..'
+            raise ArgumentError, 'path component is too long' if part.bytesize > 255
+        end
+
+        parts.join('/')
     end
 
-    post '/api/fs_makedir' do
-        assert(user_logged_in?)
-        data = parse_request_data(:required_keys => [:path], :types => {:path => String})
-        data[:path] = data[:path].gsub('//', '/')
-        data[:path] = '/com.nesbox.tic/TIC-80/' + data[:path] unless data[:path][0] == '/'
-        STDERR.puts "[FS_MAKEDIR] #{data[:path]}"
-        neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email], :path => data[:path]})
-            MATCH (u:User {email: $email})
-            WITH u
-            MERGE (f:TIC80Dir {path: $path})
-            WITH u, f
-            MERGE (u)-[r:HAS]->(f)
-            RETURN f;
-        END_OF_STRING
+    def tic80_tree(root, include_contents: false)
+        raise "TIC-80 storage root must not be a symlink: #{root}" if File.symlink?(root)
+        raise "TIC-80 storage root is not a directory: #{root}" unless File.directory?(root)
+
+        dirs = []
+        files = []
+        digest = Digest::SHA256.new
+
+        entries = Dir.glob(File.join(root, '**', '*'), File::FNM_DOTMATCH).reject do |path|
+            ['.', '..'].include?(File.basename(path))
+        end.sort
+
+        entries.each do |path|
+            stat = File.lstat(path)
+            relative = path.delete_prefix(root + File::SEPARATOR)
+
+            if stat.symlink?
+                raise "TIC-80 storage contains unsupported symlink: #{relative}"
+            elsif stat.directory?
+                dirs << relative
+                digest.update("D\0#{relative}\0")
+            elsif stat.file?
+                contents = File.binread(path)
+                content_sha256 = Digest::SHA256.hexdigest(contents)
+                digest.update("F\0#{relative}\0#{content_sha256}\0")
+
+                entry = {
+                    :path => relative,
+                    :size => contents.bytesize,
+                    :mtime_ms => (stat.mtime.to_f * 1000).round,
+                    :sha256 => content_sha256,
+                }
+                entry[:contents] = Base64.strict_encode64(contents) if include_contents
+                files << entry
+            else
+                raise "TIC-80 storage contains unsupported entry: #{relative}"
+            end
+        end
+
+        {
+            :revision => digest.hexdigest,
+            :dirs => dirs,
+            :files => files,
+        }
     end
 
-    post '/api/fs_deldir' do
+    def tic80_with_storage(email)
+        paths = tic80_storage_paths(email)
+
+        File.open(paths[:lock], File::RDWR | File::CREAT, 0o600) do |lock|
+            lock.flock(File::LOCK_EX)
+            tic80_recover_storage_unlocked!(paths)
+            yield paths
+        ensure
+            lock.flock(File::LOCK_UN) rescue nil
+        end
+    end
+
+    def tic80_parse_sync_request
+        max_body = TIC80_MAX_SYNC_BYTES * 2
+        length = request.content_length.to_i
+        halt 413, { :error => 'tic80_sync_too_large' }.to_json if length > max_body
+
+        body = request.body.read(max_body + 1)
+        halt 413, { :error => 'tic80_sync_too_large' }.to_json if body.bytesize > max_body
+
+        data = JSON.parse(body, :symbolize_names => true)
+        unless data.is_a?(Hash) &&
+               data[:base_revision].is_a?(String) &&
+               data[:dirs].is_a?(Array) &&
+               data[:files].is_a?(Array)
+            halt 400, { :error => 'invalid_tic80_sync_request' }.to_json
+        end
+
+        unless data[:base_revision].match?(/\A[0-9a-f]{64}\z/)
+            halt 400, { :error => 'invalid_tic80_revision' }.to_json
+        end
+
+        data
+    rescue JSON::ParserError
+        halt 400, { :error => 'invalid_json' }.to_json
+    end
+
+    def tic80_build_stage!(root, data)
+        parent = File.dirname(root)
+        stage = File.join(parent, "#{File.basename(root)}.sync-#{SecureRandom.hex(8)}")
+
+        dirs = []
+        files = []
+        seen = {}
+        total_bytes = 0
+
+        data[:dirs].each do |entry|
+            relative = tic80_relative_path(entry)
+            raise ArgumentError, "duplicate path: #{relative}" if seen[relative]
+            seen[relative] = :dir
+            dirs << relative
+        end
+
+        data[:files].each do |entry|
+            unless entry.is_a?(Hash) && entry[:path].is_a?(String) && entry[:contents].is_a?(String)
+                raise ArgumentError, 'each file requires path and base64 contents'
+            end
+
+            relative = tic80_relative_path(entry[:path])
+            raise ArgumentError, "duplicate path: #{relative}" if seen[relative]
+            seen[relative] = :file
+
+            begin
+                contents = Base64.strict_decode64(entry[:contents])
+            rescue ArgumentError
+                raise ArgumentError, "invalid base64 for #{relative}"
+            end
+
+            total_bytes += contents.bytesize
+            raise ArgumentError, 'TIC-80 filesystem is too large' if total_bytes > TIC80_MAX_SYNC_BYTES
+
+            files << {
+                :path => relative,
+                :contents => contents,
+                :mtime_ms => entry[:mtime_ms],
+            }
+        end
+
+        file_paths = files.map { |entry| entry[:path] }.to_set
+        (dirs + file_paths.to_a).each do |path|
+            parts = path.split('/')
+            1.upto(parts.length - 1) do |length|
+                ancestor = parts.first(length).join('/')
+                if file_paths.include?(ancestor)
+                    raise ArgumentError, "file used as parent directory: #{ancestor}"
+                end
+            end
+        end
+
+        FileUtils.mkdir_p(stage)
+
+        begin
+            dirs.sort_by { |path| [path.count('/'), path] }.each do |relative|
+                FileUtils.mkdir_p(File.join(stage, relative))
+            end
+
+            files.each do |entry|
+                path = File.join(stage, entry[:path])
+                FileUtils.mkdir_p(File.dirname(path))
+                File.open(path, 'wb', 0o600) do |file|
+                    file.write(entry[:contents])
+                    file.flush
+                    file.fsync
+                end
+
+                if entry[:mtime_ms].is_a?(Numeric)
+                    mtime = Time.at(entry[:mtime_ms].to_f / 1000.0)
+                    File.utime(mtime, mtime, path)
+                end
+            end
+
+            FileUtils.chown_R(WORKSPACE_UID, WORKSPACE_GID, stage)
+            [stage, tic80_tree(stage, :include_contents => false)[:revision]]
+        rescue
+            FileUtils.rm_rf(stage)
+            raise
+        end
+    end
+
+    def tic80_swap_tree!(root, stage)
+        parent = File.dirname(root)
+        backup = File.join(parent, "#{File.basename(root)}.backup-#{SecureRandom.hex(8)}")
+
+        begin
+            File.rename(root, backup)
+            File.rename(stage, root)
+            tic80_fsync_dir(parent)
+            FileUtils.rm_rf(backup)
+        rescue
+            if !Dir.exist?(root) && Dir.exist?(backup)
+                File.rename(backup, root) rescue nil
+            end
+            raise
+        ensure
+            FileUtils.rm_rf(stage) if Dir.exist?(stage)
+        end
+    end
+
+    # Load the authoritative filesystem from /workspace/TIC-80.
+    get '/api/tic80/fs' do
         assert(user_logged_in?)
-        data = parse_request_data(:required_keys => [:path], :types => {:path => String})
-        data[:path] = data[:path].gsub('//', '/')
-        data[:path] = '/com.nesbox.tic/TIC-80/' + data[:path] unless data[:path][0] == '/'
-        STDERR.puts "[FS_DELDIR] #{data[:path]}"
-        neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email], :path => data[:path]})
-            MATCH (u:User {email: $email})-[r:HAS]->(f:TIC80Dir {path: $path})
-            DELETE r;
-        END_OF_STRING
+
+        tic80_with_storage(@session_user[:email]) do |paths|
+            respond(tic80_tree(paths[:root], :include_contents => true))
+        end
+    end
+
+    # Replace the authoritative filesystem atomically. The revision prevents a
+    # second browser tab or a direct code-server edit from being silently lost.
+    post '/api/tic80/fs_sync' do
+        assert(user_logged_in?)
+        data = tic80_parse_sync_request
+
+        tic80_with_storage(@session_user[:email]) do |paths|
+            root = paths[:root]
+
+            begin
+                stage, new_revision = tic80_build_stage!(root, data)
+            rescue ArgumentError => e
+                content_type :json
+                halt 400, { :error => 'invalid_tic80_tree', :detail => e.message }.to_json
+            end
+
+            current_revision = tic80_tree(root, :include_contents => false)[:revision]
+
+            if data[:base_revision] != current_revision
+                # A retry after a lost HTTP response is safe: acknowledge it if
+                # the requested tree is already exactly what is on disk.
+                if new_revision == current_revision
+                    FileUtils.rm_rf(stage)
+                    next respond(:ok => true, :revision => current_revision, :already_applied => true)
+                end
+
+                FileUtils.rm_rf(stage)
+                content_type :json
+                halt 409, {
+                    :error => 'tic80_sync_conflict',
+                    :revision => current_revision,
+                }.to_json
+            end
+
+            # code-server does not honor our lock. Recheck just before the swap
+            # so an edit made while the new tree was being staged is not knowingly
+            # overwritten.
+            rechecked_revision = tic80_tree(root, :include_contents => false)[:revision]
+            if rechecked_revision != current_revision
+                FileUtils.rm_rf(stage)
+                content_type :json
+                halt 409, {
+                    :error => 'tic80_sync_conflict',
+                    :revision => rechecked_revision,
+                }.to_json
+            end
+
+            tic80_swap_tree!(root, stage)
+            respond(:ok => true, :revision => new_revision)
+        end
     end
 
     get '/api/ping' do
@@ -2233,33 +3907,33 @@ class Main < Sinatra::Base
         END_OF_STRING
     end
 
-    get '/pdf..*' do
-        # Here's a hack to make live reload work with LaTeX PDFs
-        # The LaTeX Workshop extensions recompiles the PDF on save
-        # and then requests a funny URL to reload the PDF in the browser.
-        # This route serves the main.pdf by looking for the latest
-        # PDF file in the current user's workspace tree.
+    # get '/pdf..*' do
+    #     # Here's a hack to make live reload work with LaTeX PDFs
+    #     # The LaTeX Workshop extensions recompiles the PDF on save
+    #     # and then requests a funny URL to reload the PDF in the browser.
+    #     # This route serves the main.pdf by looking for the latest
+    #     # PDF file in the current user's workspace tree.
 
-        # If the user uses a share tag, we need to look up the email
-        # Otherwise, use the email of the logged in user
+    #     # If the user uses a share tag, we need to look up the email
+    #     # Otherwise, use the email of the logged in user
 
-        referer_path = request.env['HTTP_REFERER']
-        referer_path = URI.parse(referer_path).path
-        share_tag = referer_path.split('/')[1]
-        rows = neo4j_query(<<~END_OF_STRING, {:share_tag => share_tag})
-            MATCH (u:User {share_tag: $share_tag})
-            RETURN u.email;
-        END_OF_STRING
-        email = (rows.first || {})['u.email']
-        email ||= (@session_user || {})[:email]
-        assert(!(email.nil?))
-        fs_tag = fs_tag_for_email(email)
-        candidates = Dir["/user/#{fs_tag}/workspace/**/*.pdf"]
-        candidates.sort! do |a, b|
-            File.mtime(b) <=> File.mtime(a)
-        end
-        respond_with_file(candidates.first)
-    end
+    #     referer_path = request.env['HTTP_REFERER']
+    #     referer_path = URI.parse(referer_path).path
+    #     share_tag = referer_path.split('/')[1]
+    #     rows = neo4j_query(<<~END_OF_STRING, {:share_tag => share_tag})
+    #         MATCH (u:User {share_tag: $share_tag})
+    #         RETURN u.email;
+    #     END_OF_STRING
+    #     email = (rows.first || {})['u.email']
+    #     email ||= (@session_user || {})[:email]
+    #     assert(!(email.nil?))
+    #     fs_tag = fs_tag_for_email(email)
+    #     candidates = Dir["/user/#{fs_tag}/workspace/**/*.pdf"]
+    #     candidates.sort! do |a, b|
+    #         File.mtime(b) <=> File.mtime(a)
+    #     end
+    #     respond_with_file(candidates.first)
+    # end
 
     post '/api/upload_test_archive' do
         assert(teacher_logged_in?)
@@ -2425,13 +4099,14 @@ class Main < Sinatra::Base
                 <!DOCTYPE html>
                 <html>
                 <head>
+                    <link rel="stylesheet" href="/include/fonts.css?#{CACHE_BUSTER}">
                     <style>
                         body {
-                            font-family: 'Latin Modern Mono', monospace;
+                            font-family: '0xProto Nerd Font Mono', monospace;
                             font-size: 12pt;
                         }
                         pre {
-                            font-family: 'Latin Modern Mono', monospace;
+                            font-family: '0xProto Nerd Font Mono', monospace;
                             font-size: 12pt;
                             white-space: pre-wrap;
                         }
@@ -2452,7 +4127,7 @@ class Main < Sinatra::Base
                 email_with_test_tag = "#{email}#{test_tag}"
                 container_name = fs_tag_for_email(email_with_test_tag)
                 Dir["/user/#{container_name}/workspace/*"].each do |path|
-                    if ['txt', 'dart'].include?(path.split('.').last)
+                    if ['txt', 'dart', 'asm'].include?(path.split('.').last)
                         io.puts "<div class='file'>"
                         io.puts "<div style='display: flex; background-color: #ccc; padding: 0.25em 0.25em; font-weight: bold;'>"
                         io.puts "<div>#{File.basename(path)}</div>"
@@ -2477,13 +4152,13 @@ class Main < Sinatra::Base
         respond_raw_with_mimetype(html, 'text/html')
     end
 
-    # SELECT 
+    # SELECT
     #     table_name AS `table`,
     #     table_rows AS `rows`,
     #     data_length + index_length AS size
-    # FROM 
+    # FROM
     #     information_schema.tables
-    # WHERE 
+    # WHERE
     #     table_schema = 'specht';
 
     # show create table specht.crew;
@@ -2493,12 +4168,12 @@ class Main < Sinatra::Base
         client = Mysql2::Client.new(
             host: 'mysql',
             username: 'root',
-            password: MYSQL_ROOT_PASSWORD,
+            password: MYSQL_ROOT_PASSWORD
         )
 
         result = {}
         databases = []
-        databases << @session_user[:email].split('@').first.downcase
+        databases << @session_user[:db_login]
         neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email]}).each do |row|
             MATCH (u:User {email: $email})-[:HAS]->(d:Database {type: 'mysql'})
             RETURN d.name AS name;
@@ -2529,49 +4204,565 @@ class Main < Sinatra::Base
 
     post '/api/create_mysql_database' do
         assert(user_logged_in?)
-        count = neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email]})['count']
-            MATCH (u:User {email: $email})-[:HAS]->(d:Database {type: 'mysql'})
-            RETURN COUNT(d) AS count;
-        END_OF_STRING
-        assert(count < 4)
-        database_name = "db_#{RandomTag.generate(12)}"
-        client = Mysql2::Client.new(
-            host: 'mysql',
-            username: 'root',
-            password: MYSQL_ROOT_PASSWORD,
-        )
-        login = @session_user[:email].split('@').first.downcase
-        client.query("CREATE DATABASE #{database_name};")
-        client.query("GRANT ALL ON `#{database_name}`.* TO '#{login}'@'%';")
-        client.query("FLUSH PRIVILEGES;")
-        neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email], :database_name => database_name})
-            MATCH (u:User {email: $email})
-            CREATE (d:Database {type: 'mysql', name: $database_name})<-[:HAS]-(u)
-            RETURN d;
-        END_OF_STRING
+        mysql_database_lock(@session_user[:email]).synchronize do
+            count = neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email]})['count']
+                MATCH (u:User {email: $email})-[:HAS]->(d:Database {type: 'mysql'})
+                RETURN COUNT(d) AS count;
+            END_OF_STRING
+            assert(count < 4)
+            database_name = "db_#{RandomTag.generate(12)}"
+            client = Mysql2::Client.new(
+                host: 'mysql',
+                username: 'root',
+                password: MYSQL_ROOT_PASSWORD
+            )
+            login = @session_user[:db_login]
+            client.query("CREATE DATABASE #{database_name};")
+            client.query("GRANT ALL ON `#{database_name}`.* TO '#{login}'@'%';")
+            client.query("FLUSH PRIVILEGES;")
+            neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email], :database_name => database_name})
+                MATCH (u:User {email: $email})
+                CREATE (d:Database {type: 'mysql', name: $database_name})<-[:HAS]-(u)
+                RETURN d;
+            END_OF_STRING
+        end
         respond(:yay => 'sure')
     end
 
     post '/api/delete_mysql_database' do
         assert(user_logged_in?)
         data = parse_request_data(:required_keys => [:database])
-        client = Mysql2::Client.new(
-            host: 'mysql',
-            username: 'root',
-            password: MYSQL_ROOT_PASSWORD,
-        )
-        is_user_db = (data[:database] == @session_user[:email].split('@').first.downcase)
-        client.query("DROP DATABASE IF EXISTS `#{data[:database]}`;")
-        neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email], :database => data[:database]})
-            MATCH (u:User {email: $email})-[:HAS]->(d:Database {type: 'mysql', name: $database})
-            DETACH DELETE d;
-        END_OF_STRING
-        if is_user_db
-            login = @session_user[:email].split('@').first.downcase
-            client.query("CREATE DATABASE `#{login}`;")
-            client.query("GRANT ALL ON `#{login}`.* TO '#{login}'@'%';")
-            client.query("FLUSH PRIVILEGES;")
+        mysql_database_lock(@session_user[:email]).synchronize do
+            client = Mysql2::Client.new(
+                host: 'mysql',
+                username: 'root',
+                password: MYSQL_ROOT_PASSWORD
+            )
+            is_user_db = (data[:database] == @session_user[:db_login])
+            client.query("DROP DATABASE IF EXISTS `#{data[:database]}`;")
+            neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email], :database => data[:database]})
+                MATCH (u:User {email: $email})-[:HAS]->(d:Database {type: 'mysql', name: $database})
+                DETACH DELETE d;
+            END_OF_STRING
+            if is_user_db
+                login = @session_user[:db_login]
+                client.query("CREATE DATABASE `#{login}`;")
+                client.query("GRANT ALL ON `#{login}`.* TO '#{login}'@'%';")
+                client.query("FLUSH PRIVILEGES;")
+            end
         end
+    end
+
+    @@codebite_content_mutex = Mutex.new
+
+    def self.update_codebites
+        @@codebite_content_mutex.synchronize do
+            update_codebites_locked
+        end
+    end
+
+    def self.update_codebites_locked
+        # In development we want live reload: re-parse on every call.
+        # In production we want to travel light: parse once per process.
+        unless DEVELOPMENT
+            return if defined?(@@codebite_sections) && @@codebite_sections &&
+                defined?(@@codebite_tasks) && @@codebite_tasks
+        end
+
+        codebite_tasks = {}
+
+        sections_path = "/src/codebites/tasks/tasks.yaml"
+        codebite_sections = YAML.load_file(sections_path)
+
+        # Parse embedded @@sections from single-file tasks without executing the Ruby code.
+        section_marker = "\n__END__\n"
+
+        parse_meta = lambda do |sections|
+            # Prefer meta.yaml, fallback to meta.json
+            if (y = sections["meta.yaml"]) && !y.strip.empty?
+                begin
+                    meta = YAML.safe_load(y) || {}
+                    meta.is_a?(Hash) ? meta : {}
+                rescue
+                    {}
+                end
+            else
+                {}
+            end
+        end
+
+        parse_sections = lambda do |text|
+            out = {}
+            current = nil
+            buf = +""
+
+            text.each_line do |line|
+                if line.start_with?("@@")
+                    out[current] = buf.rstrip + "\n" if current
+                    current = line.strip.sub("@@", "")
+                    buf = +""
+                else
+                    buf << line
+                end
+            end
+
+            out[current] = buf.rstrip + "\n" if current
+            out
+        end
+
+        extract_title = lambda do |md|
+            return nil if md.nil? || md.strip.empty?
+            md.each_line do |line|
+                if line =~ /^\s*\#{1,2}\s+(.+?)\s*$/
+                    return Regexp.last_match(1).strip
+                end
+            end
+            nil
+        end
+
+        codebite_sections.each do |section|
+            section.fetch('entries', []).each do |task_id|
+                task_rb_path = "/src/codebites/tasks/#{task_id}.rb"
+                next unless File.exist?(task_rb_path)
+
+                content = File.read(task_rb_path)
+                idx = content.index(section_marker)
+                sections_text = idx ? content[(idx + section_marker.length)..] : ""
+                sections = parse_sections.call(sections_text)
+
+                md = sections['task.md'] || ""
+                heading = extract_title.call(md) || task_id
+
+                meta = parse_meta.call(sections)
+                difficulty = meta["difficulty"] || meta[:difficulty]
+                difficulty = difficulty.to_i if difficulty
+                difficulty = nil unless difficulty && difficulty.between?(1, 5)
+
+                codebite_tasks[task_id] = {
+                    mtime: File.mtime(task_rb_path),
+                    heading: heading,
+                    difficulty: difficulty,
+                    section_key: section['key'],
+                    section_title: section['title'],
+                }
+            end
+        end
+
+        @@codebite_sections = codebite_sections
+        @@codebite_tasks = codebite_tasks
+    end
+
+    private_class_method :update_codebites_locked
+
+    post '/api/codebites_get_tasks' do
+        Main.update_codebites()
+        result = {
+            :sections => @@codebite_sections,
+            :tasks => @@codebite_tasks,
+        }
+        if user_logged_in?
+            result[:solved_tasks] = {}
+            neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email]}).map do |row|
+                MATCH (s:Solved)-[:FOR]->(t:Task), (s)-[:BY]->(u:User {email: $email}), (s)-[:IN]->(l:Language)
+                RETURN DISTINCT t.name, l.name;
+            END_OF_STRING
+                result[:solved_tasks][row['t.name']] ||= []
+                result[:solved_tasks][row['t.name']] << row['l.name']
+            end
+        end
+        respond(result)
+    end
+
+    post '/api/get_codebite' do
+        data = parse_request_data(:required_keys => [:task])
+        Main.update_codebites
+        task = data[:task]
+        assert(!(task.include?('/') || task.include?('.')))
+        result = {}
+        task_rb_path = "/src/codebites/tasks/#{task}.rb"
+        halt 404 unless File.exist?(task_rb_path)
+
+        content = File.read(task_rb_path)
+        section_marker = "\n__END__\n"
+        idx = content.index(section_marker)
+        sections_text = idx ? content[(idx + section_marker.length)..] : ""
+
+        # Parse @@sections (same mini format as the runner)
+        sections = {}
+        current = nil
+        buf = +""
+        sections_text.each_line do |line|
+            if line.start_with?("@@")
+                sections[current] = buf.rstrip + "\n" if current
+                current = line.strip.sub("@@", "")
+                buf = +""
+            else
+                buf << line
+            end
+        end
+        sections[current] = buf.rstrip + "\n" if current
+
+        md = sections['task.md'] || ""
+        redcarpet = Redcarpet::Markdown.new(Redcarpet::Render::HTML, {:fenced_code_blocks => true})
+        result[:section_key] = @@codebite_tasks[task][:section_key]
+        result[:section_title] = @@codebite_tasks[task][:section_title]
+        result[:problem] = redcarpet.render(md)
+        result[:preferred_language] = neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email]})['preferred_language']
+            MATCH (u:User {email: $email})
+            RETURN COALESCE(u.preferred_language, "ruby") AS preferred_language;
+        END_OF_STRING
+        result[:solved] = neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email], :task => task}).map { |x| x['lang'] }
+            MATCH (u:User {email: $email})<-[:BY]-(s:Solved)-[:FOR]->(t:Task {name: $task}), (s)-[:IN]->(l:Language)
+            RETURN DISTINCT l.name AS lang;
+        END_OF_STRING
+        result[:starter] ||= {}
+        {
+            'ruby' => 'starter.rb',
+            'python' => 'starter.py',
+            'javascript' => 'starter.js',
+        }.each do |lang, key|
+            val = sections[key]
+            result[:starter][lang] = val if val && !val.strip.empty?
+        end
+        respond(:result => result)
+    end
+
+    post '/api/set_preferred_language' do
+        assert(user_logged_in?)
+        data = parse_request_data(:required_keys => [:language])
+        language = data[:language]
+        assert(%w(ruby python javascript).include?(language))
+        neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email], :language => language})
+            MATCH (u:User {email: $email})
+            SET u.preferred_language = $language
+            RETURN u;
+        END_OF_STRING
+        respond(:yay => 'sure')
+    end
+
+    get '/ws_codebites' do
+        assert(user_logged_in?)
+        if Faye::WebSocket.websocket?(request.env)
+            ws = Faye::WebSocket.new(request.env)
+
+            ws.on(:open) do |_|
+                client_id = request.env['HTTP_SEC_WEBSOCKET_KEY']
+                email = @session_user[:email]
+
+                @@codebite_mutex.synchronize do
+                    @@codebite_ws_clients[email] ||= {}
+                    @@codebite_ws_clients[email][client_id] = ws
+                end
+
+                ws.send({ action: "codebite_ws_ready" }.to_json)
+            end
+
+            ws.on(:close) do |_|
+                client_id = request.env['HTTP_SEC_WEBSOCKET_KEY']
+                email = @session_user[:email]
+
+                @@codebite_mutex.synchronize do
+                    if @@codebite_ws_clients[email]
+                        @@codebite_ws_clients[email].delete(client_id)
+                        @@codebite_ws_clients.delete(email) if @@codebite_ws_clients[email].empty?
+                    end
+                end
+            end
+
+            ws.on(:message) do |msg|
+                # Optional: handle ping or client-side subscription messages later
+                # For now we can ignore or accept {"ping":true}
+                begin
+                    data = msg.data.to_s
+                    if !data.empty?
+                        obj = JSON.parse(data) rescue {}
+                        if obj["ping"]
+                            ws.send({ action: "pong" }.to_json)
+                        end
+                    end
+                rescue
+                end
+            end
+
+            return ws.rack_response
+        end
+        halt 400
+    end
+
+    post '/api/codebite_load_submissions' do
+        assert(user_logged_in?)
+        data = parse_request_data(required_keys: [:task, :language])
+
+        user_has_correct_submissions = neo4j_query_expect_one(<<~END_OF_STRING, {:email => @session_user[:email], :task => data[:task], :language => data[:language]})['count'] > 0
+            MATCH (u:User {email: $email})<-[:BY]-(s:Solved)-[:FOR]->(t:Task {name: $task}), (s)-[:IN]->(l:Language {name: $language})
+            RETURN COUNT(s) AS count;
+        END_OF_STRING
+
+        submissions = {:successful => [], :tries => []}
+        [true, false].each do |success|
+            if user_has_correct_submissions
+                next unless success
+            else
+                next if success
+            end
+            if success
+                neo4j_query(<<~END_OF_STRING, {:task => data[:task], :language => data[:language], :success => success}).to_a.each do |x|
+                    MATCH (l:Language {name: $language})<-[:IN]-(s:Submission {success: $success})-[:FOR]->(t:Task {name: $task}), (s)-[:WITH]->(c:Code)
+                    RETURN s, c
+                    ORDER BY c.size;
+                END_OF_STRING
+                    entry = {
+                        :sha1 => x['c'][:sha1],
+                        :line_count => x['c'][:line_count],
+                        :size => x['c'][:size],
+                        :lang => data[:language],
+                        :success => success,
+                    }
+                    submissions[:successful] << entry
+                end
+            else
+                neo4j_query(<<~END_OF_STRING, {:email => @session_user[:email], :task => data[:task], :language => data[:language], :success => success}).to_a.each do |x|
+                    MATCH (l:Language {name: $language})<-[:IN]-(s:Submission {success: $success})-[:FOR]->(t:Task {name: $task}),
+                    (s)-[:WITH]->(c:Code), (s)-[r:BY]->(u:User {email: $email})
+                    RETURN s, c
+                    ORDER BY r.ts DESC;
+                END_OF_STRING
+                    entry = {
+                        :sha1 => x['c'][:sha1],
+                        :line_count => x['c'][:line_count],
+                        :size => x['c'][:size],
+                        :lang => data[:language],
+                        :success => success,
+                    }
+                    submissions[:tries] << entry
+                end
+            end
+        end
+
+        respond(:submissions => submissions)
+    end
+
+    post '/api/codebite_load_submission_code' do
+        data = parse_request_data(required_keys: [:sha1, :language])
+        sha1 = data[:sha1]
+        assert(sha1 =~ /\A[a-f0-9]{40}\z/)
+        path = "/internal/codebites/#{sha1[0, 2]}/#{sha1[2, sha1.size - 2]}"
+        code = nil
+        highlighted_code = nil
+        if File.exist?(path)
+            code = File.read(path)
+        end
+        highlighted_path = "/internal/codebites/#{sha1[0, 2]}/#{sha1[2, sha1.size - 2]}.hl"
+        if File.exist?(highlighted_path)
+            highlighted_code = File.read(highlighted_path)
+        end
+        respond(:code => code, :formatted_code => highlighted_code)
+    end
+
+    post '/api/run_codebite' do
+        run_lock = nil
+        assert(user_logged_in?)
+        data = parse_request_data(required_keys: [:task, :language, :code], :max_body_length => 100 * 1024, :max_string_length => 100 * 1024, :max_value_lengths => { :code => 100 * 1024 })
+
+        task = data[:task].strip
+        language = data[:language].strip
+        code = data[:code].to_s.strip
+
+        # if data[:language] == "ruby"
+        #     code = rubocop_format_ruby(code).to_s
+        # end
+
+        lines = code.split("\n")
+        lines.map! { |l| l.rstrip }
+        code = lines.join("\n")
+        code.rstrip!
+
+        line_count = code.count("\n") + 1
+        size = code.bytesize
+
+        # basic guardrails
+        assert(task =~ /\A[a-zA-Z0-9_\-]+\z/)
+        assert(%w(ruby python javascript).include?(language))
+
+        email = @session_user[:email]
+        run_lock = codebite_run_lock(email)
+        run_lock.lock
+
+        # 0) kill any existing run for this user
+        kill_codebite_run(email, reason: "new submission")
+
+        # 1) handle: sha1, store file, DB link, etc.
+        sha1 = Digest::SHA1.hexdigest(language + code)
+        path = "/internal/codebites/#{sha1[0, 2]}/#{sha1[2, sha1.size - 2]}"
+        FileUtils.mkpath(File.dirname(path))
+        unless File.exist?(path)
+            AtomicFile.write(path, code)
+        end
+        highlighted_path = "/internal/codebites/#{sha1[0, 2]}/#{sha1[2, sha1.size - 2]}.hl"
+        unless File.exist?(highlighted_path)
+            formatter = Rouge::Formatters::HTML.new
+            lexer = case language
+            when 'ruby'
+                Rouge::Lexers::Ruby.new
+            when 'python'
+                Rouge::Lexers::Python.new
+            when 'javascript'
+                Rouge::Lexers::Javascript.new
+            else
+                Rouge::Lexers::PlainText.new
+            end
+
+            formatted_code = formatter.format(lexer.lex(code))
+            # use first 10 lines
+            formatted_code = formatted_code.split("\n")[0, 10].join("\n")
+            AtomicFile.write(highlighted_path, formatted_code)
+        end
+        ts = Time.now.to_i
+        submission_id = Digest::SHA1.hexdigest("#{task}-#{language}-#{sha1}")
+        neo4j_query(<<~END_OF_STRING, {:email => email, :task => task, :lang => language, :sha1 => sha1, :line_count => line_count, :size => size, :ts => ts, :submission_id => submission_id})
+            MERGE (u:User {email: $email})
+            MERGE (t:Task {name: $task})
+            MERGE (l:Language {name: $lang})
+            MERGE (c:Code {sha1: $sha1})
+            ON CREATE SET c.line_count = $line_count, c.size = $size
+
+            WITH u,t,l,c
+
+            MERGE (s:Submission {id: $submission_id})
+            ON CREATE SET s.success = false
+
+            MERGE (s)-[r:BY]->(u)
+            ON CREATE SET r.ts = $ts
+            MERGE (s)-[:FOR]->(t)
+            MERGE (s)-[:IN]->(l)
+            MERGE (s)-[:WITH]->(c);
+        END_OF_STRING
+
+        # 2) spawn runner
+        cmd = ["/src/codebites/bin/run_task.rb", task, language, "--stream"]
+
+        # codebite_broadcast(email, { action: "codebite_status", status: "starting", task: task, language: language })
+
+        stdin, stdout, stderr, wait_thr = Open3.popen3(*cmd)
+
+        # Important: send the code to stdin, then close it
+        stdin.write(code)
+        stdin.close
+
+        pid = wait_thr.pid
+
+        threads = []
+
+        # helper to stream chunks as base64 (safe for JSON + binary)
+        stream_chunk = lambda do |stream_name, io|
+            begin
+                while (chunk = io.readpartial(64))
+                    codebite_broadcast(email, {
+                        action: "codebite_output",
+                        stream: stream_name,                 # "stdout" or "stderr"
+                        data_b64: Base64.strict_encode64(chunk)
+                    })
+                end
+            rescue EOFError
+            rescue => e
+                codebite_broadcast(email, {
+                    action: "codebite_error",
+                    message: "stream #{stream_name} failed: #{e.class}: #{e.message}"
+                })
+            ensure
+                io.close rescue nil
+            end
+        end
+
+        threads << Thread.new { stream_chunk.call("stdout", stdout) }
+        threads << Thread.new { stream_chunk.call("stderr", stderr) }
+
+        @@codebite_mutex.synchronize do
+            @@codebite_runs[email] = {
+                pid: pid,
+                wait_thr: wait_thr,
+                threads: threads.dup,
+                started_at: Time.now.to_i,
+                task: task,
+                language: language
+            }
+        end
+
+        # watcher thread to emit exit code
+        watcher = Thread.new do
+            status = wait_thr.value
+            exit_code = status.exitstatus || 1
+
+            # wait a moment for remaining output threads to drain
+            threads.each { |t| t.join(0.2) rescue nil }
+
+            codebite_broadcast(email, {
+                action: "codebite_exit",
+                exit_code: exit_code,
+                language: language,
+            })
+
+            if exit_code == 0
+                neo4j_query(<<~END_OF_STRING, {:submission_id => submission_id})
+                    MATCH (s:Submission {id: $submission_id})
+                    SET s.success = true
+                END_OF_STRING
+                solved_id = Digest::SHA1.hexdigest("#{email}-#{task}-#{language}")
+                neo4j_query(<<~END_OF_STRING, {:email => email, :task => task, :language => language, :solved_id => solved_id})
+                    MERGE (u:User {email: $email})
+                    MERGE (t:Task {name: $task})
+                    MERGE (l:Language {name: $language})
+                    MERGE (s:Solved {id: $solved_id})
+                    MERGE (s)-[:BY]->(u)
+                    MERGE (s)-[:FOR]->(t)
+                    MERGE (s)-[:IN]->(l)
+                END_OF_STRING
+            end
+
+            @@codebite_mutex.synchronize do
+                # Only clear if it still points to this pid
+                if @@codebite_runs[email] && @@codebite_runs[email][:pid] == pid
+                    @@codebite_runs.delete(email)
+                end
+            end
+        end
+
+        @@codebite_mutex.synchronize do
+            run = @@codebite_runs[email]
+            run[:threads] << watcher if run && run[:pid] == pid
+        end
+        respond(yay: "running", pid: pid, code: code)
+    ensure
+        run_lock.unlock if run_lock&.owned?
+    end
+
+    post '/api/codebite_delete_submission' do
+        assert(admin_logged_in?)
+        data = parse_request_data(required_keys: [:sha1, :language])
+        sha1 = data[:sha1]
+        assert(sha1 =~ /\A[a-f0-9]{40}\z/)
+        neo4j_query(<<~END_OF_STRING, {:sha1 => sha1, :language => data[:language]})
+            MATCH (c:Code {sha1: $sha1})<-[:WITH]-(s:Submission)-[:IN]->(l:Language {name: $language})
+            DETACH DELETE s;
+        END_OF_STRING
+        respond(:yay => "deleted")
+    end
+
+    post '/api/stop_codebite' do
+        assert(user_logged_in?)
+        email = @session_user[:email]
+
+        running = codebite_run_lock(email).synchronize do
+            # If nothing is running, just be nice and say ok.
+            found = @@codebite_mutex.synchronize do
+                @@codebite_runs.key?(email)
+            end
+
+            kill_codebite_run(email, reason: "stopped by user") if found
+            found
+        end
+
+        respond(yay: "stopped", running_was: running)
     end
 
     post '/api/automatron' do
@@ -2658,12 +4849,181 @@ class Main < Sinatra::Base
         respond(payload)
     end
 
+    def print_codebites_admin_table
+        assert(teacher_logged_in?)
+        Main.update_codebites()
+
+        email_for_tag = {}
+        registered_emails = []
+        neo4j_query(<<~END_OF_STRING).each do |row|
+            MATCH (u:User) RETURN u.email;
+        END_OF_STRING
+            email = row['u.email']
+            email_for_tag[fs_tag_for_email(email)] = email
+            registered_emails << email
+        end
+
+        solved_tasks = {}
+        tried_tasks = {}
+
+        neo4j_query(<<~END_OF_STRING).each do |row|
+            MATCH (u:User)<-[:BY]-(s:Solved)-[:FOR]->(t:Task), (s)-[:IN]->(l:Language)
+            RETURN DISTINCT u.email, t.name, l.name;
+        END_OF_STRING
+            email = row['u.email']
+            task = row['t.name']
+            lang = row['l.name']
+            solved_tasks[email] ||= {}
+            solved_tasks[email][task] ||= []
+            solved_tasks[email][task] << lang
+        end
+        neo4j_query(<<~END_OF_STRING).each do |row|
+            MATCH (u:User)<-[:BY]-(s:Submission)-[:FOR]->(t:Task), (s)-[:IN]->(l:Language)
+            RETURN DISTINCT u.email, t.name, l.name;
+        END_OF_STRING
+            email = row['u.email']
+            task = row['t.name']
+            lang = row['l.name']
+            tried_tasks[email] ||= {}
+            tried_tasks[email][task] ||= []
+            tried_tasks[email][task] << lang
+        end
+
+        solution_for_task_and_lang = {}
+        line_count_for_sha1 = {}
+        neo4j_query(<<~END_OF_STRING, {}).to_a.each do |x|
+            MATCH (l:Language)<-[:IN]-(s:Submission {success: TRUE})-[:FOR]->(t:Task), (s)-[:WITH]->(c:Code)
+            RETURN s, c, l.name, t.name
+            ORDER BY c.size;
+        END_OF_STRING
+            sha1 = x['c'][:sha1]
+            lang = x['l.name']
+            task = x['t.name']
+            solution_for_task_and_lang[task] ||= {}
+            solution_for_task_and_lang[task][lang] ||= []
+            solution_for_task_and_lang[task][lang] << sha1
+            line_count_for_sha1[sha1] = x['c'][:line_count]
+        end
+
+        StringIO.open do |io|
+            io.puts "<div style='max-width: 100%; overflow-x: auto;'>"
+            io.puts "<table class='table table-sm'>"
+            io.puts "<thead>"
+            io.puts "<tr>"
+            io.puts "<th rowspan='2' style='text-align: left;'>Name</th>"
+            @@codebite_sections.each do |section|
+                io.puts "<th colspan='#{section['entries'].size}' style='text-align: left;'>#{section['title']}</th>"
+            end
+            io.puts "</tr>"
+            io.puts "<tr>"
+            @@codebite_tasks.each do |task_id, task_info|
+                io.puts "<th><a href='/codebites/#{task_id}'>#{task_info[:heading].split.map { |x| x[0] }.join}</a></th>"
+            end
+            io.puts "</tr>"
+            io.puts "</thead>"
+            last_group = nil
+            @@user_group_order.each do |group|
+                (@@user_groups[group] || []).each do |email|
+                    next unless (@@teachers[@session_user[:email]] || Set.new()).include?(group) || admin_logged_in? || email == @session_user[:email]
+                    user_tag = fs_tag_for_email(email)
+                    next unless tried_tasks.dig(email) || solved_tasks.dig(email)
+                    if group != last_group
+                        io.puts "<tr><td colspan='#{@@codebite_tasks.size + 1}' style='text-align: left; font-weight: bold; background-color: #eee;'>#{group}</td></tr>"
+                        last_group = group
+                    end
+                    io.puts "<tr>"
+                    io.puts "<td style='text-align: left;'>#{@@invitations[email][:name]}</td>"
+                    @@codebite_tasks.each do |task_id, task_info|
+                        io.puts "<td>"
+                        %w(python ruby javascript).each do |lang|
+                            state = 0
+                            if (tried_tasks.dig(email, task_id) || []).include?(lang)
+                                state = 1
+                            end
+                            if (solved_tasks.dig(email, task_id) || []).include?(lang)
+                                state = 2
+                            end
+                            io.puts "<img alt='' src='/images/lang/#{lang.sub('javascript', 'js')}-128.png' class='state-#{state}'>"
+                        end
+                        io.puts "</td>"
+                    end
+                    io.puts "</tr>"
+                end
+            end
+            io.puts "</table>"
+            io.puts "</div>"
+            @@codebite_tasks.each do |task_id, task_info|
+                next unless solution_for_task_and_lang[task_id]
+                io.puts "<h3>#{task_info[:heading]}</h3>"
+                %w(python ruby javascript).each do |lang|
+                    next unless solution_for_task_and_lang[task_id][lang]
+                    solution_for_task_and_lang[task_id][lang].each do |sha1|
+                        io.puts "<div class='masonry-container'>"
+                        code = File.read("/internal/codebites/#{sha1[0, 2]}/#{sha1[2, sha1.size - 2]}.hl") rescue nil
+                        io.puts "<div class='code-container' data-sha1='#{sha1}' data-lang='#{lang}' data-line-count='#{line_count_for_sha1[sha1]}'><pre>#{code}</pre></div>"
+                        io.puts "</div>"
+                    end
+                end
+            end
+
+            io.string
+        end
+    end
+
+    if DEVELOPMENT
+        get '/api/tutorial_screenshots/status' do
+            slug = params['slug'].to_s
+            halt 400 unless slug.match?(/\A[a-zA-Z0-9_-]+\z/)
+
+            markdown_path = if defined?(@@content_paths) && @@content_paths
+                @@content_paths[slug]
+            end
+            halt 404 unless markdown_path && File.file?(markdown_path)
+
+            begin
+                headers 'Cache-Control' => 'no-store'
+                content_type :json
+                respond(TutorialScreenshots.status(markdown_path))
+            rescue => e
+                STDERR.puts ">>> Tutorial screenshot status unavailable: #{e.class}: #{e.message}"
+                status 503
+                content_type :json
+                {
+                    :status => 'unavailable',
+                    :monitor => false,
+                    :error => e.message,
+                }.to_json
+            end
+        end
+
+        get '/api/tutorial_screenshots/image' do
+            slug = params['slug'].to_s
+            target = params['target'].to_s
+            halt 400 unless slug.match?(/\A[a-zA-Z0-9_-]+\z/)
+            halt 400 unless target.end_with?('.webp') &&
+                !target.start_with?('/') &&
+                !target.split('/').include?('..')
+
+            markdown_path = if defined?(@@content_paths) && @@content_paths
+                @@content_paths[slug]
+            end
+            halt 404 unless markdown_path && File.file?(markdown_path)
+
+            tutorial_directory = File.expand_path(File.dirname(markdown_path))
+            image_path = File.expand_path(target, tutorial_directory)
+            halt 400 unless image_path.start_with?("#{tutorial_directory}/")
+            halt 404 unless File.file?(image_path)
+
+            headers 'Cache-Control' => 'no-store'
+            respond_raw_with_mimetype(File.binread(image_path), 'image/webp')
+        end
+    end
 
     get '/*' do
         path = request.path
         slug = nil
         if DEVELOPMENT && path =~ /^\/[a-zA-Z0-9_-]+$/
-            Main.parse_content()
+            Main.refresh_tutorial(path[1, path.size - 1])
         end
         running_tests = my_running_tests()
         if path[0, 7] == '/share/'
@@ -2680,6 +5040,8 @@ class Main < Sinatra::Base
             end
             path = '/share.html'
         end
+        # STDERR.puts "Requested path: #{path}"
+        # STDERR.puts "Available content slugs: #{@@content.keys.join(', ')}"
         if @@content.include?(path[1, path.size - 1])
             slug = path[1, path.size - 1]
             path = '/a.html'
@@ -2696,87 +5058,32 @@ class Main < Sinatra::Base
         end
         if path == '/tic80/'
             s = File.read(File.join(@@static_dir, '/tic80/index.html'))
-            while true
-                index = s.index('#{')
-                break if index.nil?
-                length = 2
-                balance = 1
-                while index + length < s.size && balance > 0
-                    c = s[index + length]
-                    balance -= 1 if c == '}'
-                    balance += 1 if c == '{'
-                    length += 1
-                end
-                code = s[index + 2, length - 3]
-                begin
-                    s[index, length] = eval(code).to_s || ''
-                rescue
-                    STDERR.puts "Error while evaluating:"
-                    STDERR.puts code
-                    raise
-                end
-            end
+            s = TrustedTemplate.render(s, binding)
             respond_raw_with_mimetype(s, 'text/html')
             return
         end
+        if path[0, 11] == '/codebites/'
+            @codebite_slug = path[11, path.size - 11]
+            path = 'codebites.html'
+        end
         if path[0, 3] == '/l/'
-            rest = path[3, path.size - 3].split('/')
-            path = '/index.html'
-            tag = rest[0]
-            code = rest[1]
-            begin
-                email = neo4j_query_expect_one(<<~END_OF_QUERY, {:tag => tag, :code => code})['email']
-                    MATCH (r:LoginRequest {tag: $tag, code: $code})-[:FOR]->(u:User)
-                    RETURN u.email AS email;
-                END_OF_QUERY
-                neo4j_query(<<~END_OF_QUERY, {:tag => tag, :code => code})
-                    MATCH (r:LoginRequest {tag: $tag, code: $code})-[:FOR]->(u:User)
-                    DETACH DELETE r;
-                END_OF_QUERY
-                broadcast_login_codes()
-                sid = RandomTag::generate(24)
-                neo4j_query_expect_one(<<~END_OF_QUERY, {:sid => sid, :email => email, :expires => (DateTime.now() + 365).to_s})
-                    MATCH (u:User {email: $email})
-                    WITH u
-                    CREATE (s:Session {sid: $sid, expires: $expires})-[:FOR]->(u)
-                    RETURN s.sid AS sid;
-                END_OF_QUERY
-                expires = Time.new + 3600 * 24 * 365
-                response.set_cookie('hs_sid',
-                    :domain => ".#{WEBSITE_HOST}",
-                    :value => sid,
-                    :expires => expires,
-                    :path => '/',
-                    :httponly => true,
-                    :secure => DEVELOPMENT ? false : true)
-                response.set_cookie('hs_server_sid',
-                    :domain => ".#{WEBSITE_HOST}",
-                    :value => server_sid_for_email(email),
-                    :expires => expires,
-                    :path => "/", #"/#{fs_tag_for_email(email)}",
-                    :httponly => true,
-                    :secure => DEVELOPMENT ? false : true)
-                Thread.new do
-                    postgres_password = Main.gen_password_for_email(email, POSTGRES_PASSWORD_SALT)
-                    system("docker exec -i workspace_pgadmin_1 /venv/bin/python setup.py add-user #{email} #{postgres_password}")
-                end
-            rescue
-            end
-            redirect "#{WEB_ROOT}/", 302
+            # Login codes are intentionally redeemed through POST
+            # /api/complete_login so they never become part of browser history or
+            # ordinary access-log URLs. Old bookmarked/copied login URLs simply
+            # lead back to the login form.
+            redirect "#{WEB_ROOT}/login", 302
+            return
         end
         if path[0, 7] == '/logout'
             path = '/index.html'
-            neo4j_query(<<~END_OF_QUERY, {:sid => request.cookies['hs_sid']})
-                MATCH (s:Session {sid: $sid})
-                DETACH DELETE s;
-            END_OF_QUERY
-            response.set_cookie('hs_sid',
-                :domain => ".#{WEBSITE_HOST}",
-                :value => nil,
-                :expires => Time.new + 3600 * 24 * 365,
-                :path => '/',
-                :httponly => true,
-                :secure => DEVELOPMENT ? false : true)
+            sid = current_session_sid
+            if sid
+                neo4j_query(<<~END_OF_QUERY, :sid => sid)
+                    MATCH (s:Session {sid: $sid})
+                    DETACH DELETE s;
+                END_OF_QUERY
+            end
+            clear_session_cookies
             redirect "#{WEB_ROOT}/", 302
         end
         path = path + '.html' unless path.include?('.')
@@ -2785,33 +5092,11 @@ class Main < Sinatra::Base
         respond_with_file(path) do |content, mime_type|
             if mime_type == 'text/html'
                 template = File.read(File.join(@@static_dir, '_template.html'))
-                template.sub!('#{CONTENT}', content)
-                s = template
-                while true
-                    index = s.index('#{')
-                    break if index.nil?
-                    length = 2
-                    balance = 1
-                    while index + length < s.size && balance > 0
-                        c = s[index + length]
-                        balance -= 1 if c == '}'
-                        balance += 1 if c == '{'
-                        length += 1
-                    end
-                    code = s[index + 2, length - 3]
-                    if code[0] != '<'
-                        begin
-                            s[index, length] = eval(code).to_s || ''
-                        rescue
-                            STDERR.puts "Error while evaluating:"
-                            STDERR.puts code
-                            raise
-                        end
-                    else
-                        s.sub!('#{', '&#35;{')
-                    end
+                if path.include?('codebites') && !path.include?('codebites_admin')
+                    template = File.read(File.join(@@static_dir, '_template_codebites.html'))
                 end
-                s
+                rendered_page = TrustedTemplate.render_page(template, content, binding)
+                Main.inject_page_metadata(rendered_page, request.path)
             end
         end
     end

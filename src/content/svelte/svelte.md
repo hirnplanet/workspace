@@ -2,10 +2,16 @@
 image: svelte5.webp
 </div>
 
+<div
+    class="autotoc-secondary-trigger"
+    data-title="Auf dieser Seite"
+    data-levels="h2,h3,h4">
+</div>
+
 # Frontend-Entwicklung mit Svelte
 
 <div class='floatright' style='width: 30em;'>
-    <img src='rich-harris.webp'>
+    <img src='rich-harris.webp' alt=''>
     <p>Rich Harris</p>
 </div>
 
@@ -24,13 +30,13 @@ Svelte ist ein modernes Frontend-Framework. Es gab vorher schon viele andere Fro
 
 ## Vorbereitung
 
-Stelle zuerst sicher, dass du keinen Ordner geöffnet hast. Um sicherzugehen, drücke einfach den Shortcut für »Ordner schließen«: <span class='key'>Strg</span><span class='key'>K</span> und dann <span class='key'>F</span>. Dein Workspace sollte jetzt ungefähr so aussehen:
+Stelle zuerst sicher, dass du keinen Ordner geöffnet hast. Um sicherzugehen, drücke einfach den Shortcut für »Ordner schließen«: <kbd>Strg</kbd><kbd>K</kbd> und dann <kbd>F</kbd>. Dein Workspace sollte jetzt ungefähr so aussehen:
 
-<img class='full' src='fresh-start.webp'>
+<img class='full' src='fresh-start.webp' alt=''>
 
 ### Svelte-Erweiterung installieren
 
-Klicke dazu auf das Erweiterungs-Symbol <img src='../basics/extensions.webp' style='border-radius: 4px; height: 1.5em;'> in der Seitenleiste oder drücke <span class='key'>Strg</span><span class='key'>Shift</span><span class='key'>X</span>. Suche nach der Erweiterung »Svelte for VS Code« und installiere sie.
+Klicke dazu auf das Erweiterungs-Symbol <img src='../basics/extensions.webp' style='border-radius: 4px; height: 1.5em;' alt=''> in der Seitenleiste oder drücke <kbd>Strg</kbd><kbd>Shift</kbd><kbd>X</kbd>. Suche nach der Erweiterung »Svelte for VS Code« und installiere sie.
 
 ### Svelte-Projekt erstellen
 
@@ -42,51 +48,51 @@ npx sv create rubik-timer
 
 Du wirst vermutlich gefragt, ob das `sv`-Paket installiert werden soll:
 
-<img class='full' src='npx-sv-create-proceed.webp'>
+<img class='full' src='npx-sv-create-proceed.webp' alt=''>
 
-Bestätige mit <span class='key'>Enter</span>. Du wirst nun gefragt, welches Template du verwenden möchtest. Wähle das Standard-Template »SvelteKit minimal« aus, indem du <span class='key'>Enter</span> drückst:
+Bestätige mit <kbd>Enter</kbd>. Du wirst nun gefragt, welches Template du verwenden möchtest. Wähle das Standard-Template »SvelteKit minimal« aus, indem du <kbd>Enter</kbd> drückst:
 
-<img class='full' src='npx-sv-create-template.webp'>
+<img class='full' src='npx-sv-create-template.webp' alt=''>
 
 Bei der nächsten Frage wäre die richtige Antwort »TypeScript«, aber da wir in diesem Tutorial kein TypeScript verwenden, sondern normales JavaScript, wähle hier bitte »No« aus:
 
-<img class='full' src='npx-sv-create-type-checking.webp'>
+<img class='full' src='npx-sv-create-type-checking.webp' alt=''>
 
-Du wirst als nächstes gefragt, ob du schon ein paar Plugins installieren möchtest. Da wir keine Plugins benötigen, kannst du einfach <span class='key'>Enter</span> drücken:
+Du wirst als nächstes gefragt, ob du schon ein paar Plugins installieren möchtest. Da wir keine Plugins benötigen, kannst du einfach <kbd>Enter</kbd> drücken:
 
-<img class='full' src='npx-sv-create-plugins.webp'>
+<img class='full' src='npx-sv-create-plugins.webp' alt=''>
 
-Als letztes wirst du gefragt, welchen Paketmanager du verwenden möchtest. Wähle hier »npm« aus, indem du <span class='key'>Enter</span> drückst:
+Als letztes wirst du gefragt, welchen Paketmanager du verwenden möchtest. Wähle hier »npm« aus, indem du <kbd>Enter</kbd> drückst:
 
-<img class='full' src='npx-sv-create-package-manager.webp'>
+<img class='full' src='npx-sv-create-package-manager.webp' alt=''>
 
 Daraufhin musst du noch ein paar Sekunden warten, bis alle Abhängigkeiten installiert sind und das Projekt erstellt wurde. Wenn du die Meldung »Project created« siehst, hat alles geklappt:
 
-<img class='full' src='npx-sv-create-success.webp'>
+<img class='full' src='npx-sv-create-success.webp' alt=''>
 
 <div class='hint'>
 Falls du von vorne beginnen möchtest, kannst du einfach das Verzeichnis <code>/workspace/rubik-timer</code> löschen und von vorn beginnen.
 </div>
 
-Öffne nun das Verzeichnis, indem du entweder im Menü »File« / »Open Folder…« auswählst oder einfach <span class='key'>Strg</span><span class='key'>K</span> und dann <span class='key'>Strg</span><span class='key'>O</span> drückst. Wähle den Ordner `rubik-timer` aus:
+Öffne nun das Verzeichnis, indem du entweder im Menü »File« / »Open Folder…« auswählst oder einfach <kbd>Strg</kbd><kbd>K</kbd> und dann <kbd>Strg</kbd><kbd>O</kbd> drückst. Wähle den Ordner `rubik-timer` aus:
 
-<img class='full' src='open-folder.webp'>
+<img class='full' src='open-folder.webp' alt=''>
 
 ## Development-Server starten
 
 Bevor wir den Entwicklungs-Server im Workspace starten können, müssen wir noch eine Kleinigkeit anpassen. Öffne die Datei `package.json` und ändere den Eintrag für `"dev"` von `"vite dev"` in `"vite dev --host --open"`.
 
-<img class='full' src='patch-package-json.webp'>
+<img class='full' src='patch-package-json.webp' alt=''>
 
 Öffne nun die Datei `vite.config.js` und füge einen Eintrag `server` hinzu, um den Server für Anfragen aus deinem Workspace zu öffnen:
 
-<img class='full' src='vite-config.webp'>
+<img class='full' src='vite-config.webp' alt=''>
 
 Du musst also den folgenden Eintrag hinzufügen:
 
 ```json
 server: {
-    allowedHosts: ['workspace.hackschule.de']
+    allowedHosts: true
 }
 ```
 
@@ -102,14 +108,14 @@ npm run dev
 
 Wenn alles geklappt hat, sollte sich deine Webseite automatisch in einem neuen Tab öffnen:
 
-<img class='full border' src='welcome-to-svelte.webp'>
+<img class='full border' src='welcome-to-svelte.webp' alt='Die Svelte-Startseite bestätigt, dass das neue Projekt im Browser läuft.'>
 
 <div class='hint'>
 Tipp: Ziehe deinen Workspace und die Vorschau nebeneinander, damit du beide Fenster gleichzeitig sehen kannst.
 </div>
 
-<div cass='hint'>
-Wenn etwas nicht funktioniert, kannst du den Server jederzeit beenden, indem du im Terminal <span class='key'>Strg</span><span class='key'>C</span> drückst. Du kannst den Server dann wieder neu starten, indem du <code>npm run dev</code> eingibst.
+<div class='hint'>
+Wenn etwas nicht funktioniert, kannst du den Server jederzeit beenden, indem du im Terminal <kbd>Strg</kbd><kbd>C</kbd> drückst. Du kannst den Server dann wieder neu starten, indem du <code>npm run dev</code> eingibst.
 </div>
 
 ## Webseite implementieren
@@ -126,7 +132,7 @@ Du kennst dich bereits mit HTML und CSS aus, und jetzt werden wir auch ein wenig
 ```
 
 <div class='hint'>
-Das Öffnen von Dateien geht besonders schnell, wenn du <span class='key'>Strg</span><span class='key'>P</span> drückst und dann den Dateinamen eingibst. Probier es einmal aus, indem du die Tastenkombination drückst und dann »page« eingibst! So kannst du die Datei schnell finden, ohne durch alle Ordner navigieren zu müssen.
+Das Öffnen von Dateien geht besonders schnell, wenn du <kbd>Strg</kbd><kbd>P</kbd> drückst und dann den Dateinamen eingibst. Probier es einmal aus, indem du die Tastenkombination drückst und dann »page« eingibst! So kannst du die Datei schnell finden, ohne durch alle Ordner navigieren zu müssen.
 </div>
 
 Du kannst den Code jetzt einfach löschen und durch den folgenden ersetzen:
@@ -174,6 +180,10 @@ body {
 
 Füge den Code in einen `<style>`-Tag in der Datei `src/app.html` ein (am besten nach dem `</body>`). Wenn du die Seite jetzt aktualisierst, sollte der Scrollbalken verschwunden sein.
 
+<div class='hint'>
+Füge den CSS-Code in einem <code>&lt;style&gt;</code>-Tag in der Datei <code>src/app.html</code> ein, am besten nach dem <code>&lt;/body&gt;</code>-Tag.
+</div>
+
 ### Modellierung
 
 Um die Stoppuhr zu programmieren, brauchen wir eine Idee, wie sie benutzt werden soll – kümmern wir uns um die »Business-Logik«! Die Stoppuhr kann in verschiedenen Zuständen sein:
@@ -186,9 +196,9 @@ Um die Stoppuhr zu programmieren, brauchen wir eine Idee, wie sie benutzt werden
 
 Daraus ergibt sich folgender Ablauf:
 
-<img class='full' src='logik.webp'>
+<img class='full' src='logik.webp' alt='Ein Ablaufdiagramm zeigt, welche Zustände es gibt und wie die Anwendung zwischen ihnen wechselt.'>
 
-Um den Zustand auf der Webseite zu speichern, deklarieren wir eine Variable `state` im `<script>`-Tag:
+Um den Zustand auf der Webseite zu speichern, deklarieren wir eine Variable `state` im `<script>`-Tag von `src/routes/+page.svelte`:
 
 ```js
 let state = $state(0);
@@ -209,7 +219,7 @@ Wir können die Variable `state` jetzt in unserem HTML-Code verwenden, um den ak
 
 In deiner Vorschau sollte jetzt der Text »State = 0« erscheinen:
 
-<img class='full border' src='h1-and-state.webp'>
+<img class='full border' src='h1-and-state.webp' alt='Die Seite zeigt die Überschrift „Rubik’s Cube Timer“ und darunter den Zustand 0.'>
 
 ### Tastendruck erkennen
 
@@ -219,7 +229,7 @@ Um zu erkennen, wann die Leertaste gedrückt wird, müssen wir einen Event-Liste
 import { onMount } from 'svelte';
 ```
 
-Wir können nun den `onMount`-Hook verwenden, um den Event-Listener hinzuzufügen. Füge den folgenden Code in das `<script>`-Tag ein:
+Wir können nun den `onMount`-Hook verwenden, um den Event-Listener hinzuzufügen. Füge den folgenden Code an das Ende des `<script>`-Tags ein:
 
 ```js
 function handleKeyDown() {
@@ -238,12 +248,12 @@ onMount(() => {
 Wir definieren eine Funktion `handleKeyDown`, die den Zustand auf 1 setzt (wir werden die Logik später noch erweitern). Dann fügen wir im `onMount`-Hook einen Event-Listener hinzu, der die Funktion `handleKeyDown` aufruft, wenn die Leertaste gedrückt wird.
 
 <div class='hint'>
-Achte beim Einfügen von Code darauf, dass du eine einheitliche Einrückung verwendest. Mach dich mit den Möglichkeiten in VS Code vertraut, um den Code einzurücken. Du kannst z. B. den gesamten Code markieren und dann <span class='key'>Tab</span> drücken, um ihn einzurücken, oder <span class='key'>Shift</span><span class='key'>Tab</span>, um ihn wieder auszurücken. VS Code kann Code auch automatisch einrücken – drücke dazu <span class='key'>Strg</span><span class='key'>Shift</span><span class='key'>P</span> und gib »Reindent Lines« ein.
+Achte beim Einfügen von Code darauf, dass du eine einheitliche Einrückung verwendest. Mach dich mit den Möglichkeiten in VS Code vertraut, um den Code einzurücken. Du kannst z. B. den gesamten Code markieren und dann <kbd>Tab</kbd> drücken, um ihn einzurücken, oder <kbd>Shift</kbd><kbd>Tab</kbd>, um ihn wieder auszurücken. VS Code kann Code auch automatisch einrücken – drücke dazu <kbd>Strg</kbd><kbd>Shift</kbd><kbd>P</kbd> und gib »Reindent Lines« ein. Du kannst auch »Format Document« auswählen, um das gesamte Dokument zu formatieren.
 </div>
 
 Wenn du die Seite jetzt aktualisierst und die Leertaste drückst, sollte sich der Zustand auf 1 ändern. Wenn du die Leertaste loslässt, bleibt der Zustand auf 1 stehen. Das liegt daran, dass wir noch keine Logik implementiert haben, um den Zustand zurückzusetzen. Du kannst die Seite aber neu laden, um den Zustand zurückzusetzen.
 
-Wir fügen eine Funktion `handleKeyUp` hinzu, die den Zustand zurücksetzt, wenn die Leertaste losgelassen wird. Füge den folgenden Code in das `<script>`-Tag ein:
+Wir fügen eine Funktion `handleKeyUp` hinzu, die den Zustand zurücksetzt, wenn die Leertaste losgelassen wird. Füge den folgenden Code hinter `handleKeyDown` ein:
 
 ```js
 function handleKeyUp() {
@@ -251,7 +261,7 @@ function handleKeyUp() {
 }
 ```
 
-Füge außerdem einen weiteren Event-Listener in `onMount` hinzu, der die Funktion `handleKeyUp` aufruft, wenn die Leertaste losgelassen wird:
+Füge außerdem zwei weitere Event-Listener in `onMount` hinzu, der die Funktion `handleKeyUp` aufruft, wenn die Leertaste losgelassen wird:
 
 ```js
 document.addEventListener("keyup", (e) => {
@@ -270,7 +280,7 @@ document.addEventListener("touchstart", () => handleKeyDown());
 document.addEventListener("touchend", () => handleKeyUp());
 ```
 
-Wir fügen noch noch ein paar Variablen oben im `<script>`-Tag hinzu:
+Wir fügen noch noch ein paar Variablen oben im `<script>`-Tag hinzu (unter `let state`):
 
 ```js
 let t0 = 0;
@@ -315,7 +325,7 @@ Im CSS-Abschnitt fügen wir noch ein paar Zeilen hinzu, um den Timer zu formatie
 
 Da Svelte normalerweise allen Code, der nicht verwendet wird, aus Effizienzgründen entfernt, müssen wir CSS-Klassen, die nicht von Anfang an schon im HTML-Code vorhanden sind, mit `:global(`...`)` kennzeichnen. Das ist hier der Fall, weil die CSS-Klassen `ready` und `small` erst später durch JavaScript-Funktionen hinzugefügt werden.
 
-Wir brauchen eine Funktion, die die Timeranzeige, also die Variable `timerString`, aktualisiert. Füge den folgenden Code in das `<script>`-Tag ein:
+Wir brauchen eine Funktion, die die Timeranzeige, also die Variable `timerString`, aktualisiert. Füge den folgenden Code in das `<script>`-Tag ein (vor `handleKeyDown`):
 
 ```js
 function updateTimer() {
@@ -386,9 +396,9 @@ Der ganzen Code für die Datei `src/routes/+page.svelte` sieht jetzt so aus:
 
 _include_file(+page.svelte, svelte)
 
-Deine Seite sollte jetzt so aussehen:
+Deine Seite sollte jetzt so aussehen und funktionieren:
 
-<img class='full border' src='finished.webp'>
+<img class='full border' src='finished.webp' alt='Der einfache Rubik’s Cube Timer steht bei 00:00.00 und wartet auf das Gedrückthalten der Leertaste.'>
 
 ## Webseite erweitern
 
@@ -396,7 +406,7 @@ Jetzt, wo die Stoppuhr funktioniert, können wir uns um das Styling kümmern. Wi
 
 ### Bessere Schriftarten
 
-Wir können die Schriftart der Webseite ändern, um sie ansprechender zu gestalten. Dazu verwenden wir Google Fonts. Füge den folgenden Code in den `<head>`-Tag der Datei `src/app.html` ein:
+Wir können die Schriftart der Webseite ändern, um sie ansprechender zu gestalten. Dazu verwenden wir Google Fonts. Füge den folgenden Code in den `<head>`-Tag der Datei `src/app.html` ein (vor `%sveltekit.head%`):
 
 ```html
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -417,7 +427,7 @@ Wir können die Schriftart der Webseite ändern, um sie ansprechender zu gestalt
 
 Du solltest jetzt sehen, dass die Schriftart der Webseite geändert wurde. Wenn du die Seite aktualisierst, sollte sie jetzt so aussehen:
 
-<img class='full border' src='finished-pretty.webp'>
+<img class='full border' src='finished-pretty.webp' alt='Der gestaltete Timer zeigt auf grünem Hintergrund eine Zeit von 00:03.98.'>
 
 ### Bootstrap einbinden und Reset-Button hinzufügen
 
@@ -434,14 +444,14 @@ Jetzt kannst du Bootstrap-Klassen verwenden, um deine Webseite zu gestalten. Unt
     id="bu_reset"
     class="btn btn-lg {state < 3 ? 'btn-outline-secondary' : 'btn-warning'}"
     disabled={state < 3 ? "disabled" : ""}
-    on:click={resetTimer}>
+    onclick={resetTimer}>
     Reset
 </button>
 ```
 
 Wir definieren hier einen Button mit der ID `bu_reset`, der die Klasse `btn` von Bootstrap hat. Außerdem verwenden wir die Klasse `btn-outline-secondary` (graue Umrandung), wenn `state` kleiner als 3 ist, und ansonsten die Klasse `btn-warning` (gelbe Farbe). Außerdem wird der Button deaktiviert, wenn `state` kleiner als 3 ist. Wenn der Button geklickt wird, wird die Funktion `resetTimer` aufgerufen.
 
-Wir müssen jetzt noch eine Funktion `resetTimer` hinzufügen, die den Timer zurücksetzt. Füge den folgenden Code in das `<script>`-Tag ein (z. B. hinter der Funktion `handleKeyUp`):
+Wir müssen jetzt noch eine Funktion `resetTimer` hinzufügen, die den Timer zurücksetzt. Füge den folgenden Code in das `<script>`-Tag ein (z. B. nach der Funktion `updateTimer`):
 
 ```js
 function resetTimer() {
@@ -461,6 +471,10 @@ Auf dem Reset-Button fehlt noch ein Icon. Wir verwenden dafür [Iconify](https:/
 ```bash
 npm install @iconify/svelte
 ```
+
+<div class='hint'>
+Falls du den Entwicklungs-Server gerade laufen hast, musst du ihn jetzt stoppen (mit <kbd>Strg</kbd><kbd>C</kbd>) und anschließend den Befehl eingeben. Danach kannst du den Server wieder mit <code>npm run dev</code> starten.
+</div>
 
 Wenn du das Paket installiert hast, kannst du die Icons ganz einfach in deine Webseite einfügen. Füge den folgenden Code in den `<script>`-Tag ein:
 
@@ -489,7 +503,7 @@ Das Icon wird jetzt in dem Button angezeigt. Du kannst die Größe des Icons än
 
 Wenn du die Seite jetzt aktualisierst, solltest du den Reset-Button mit dem Icon sehen:
 
-<img class='full border' src='finished-pretty-with-icon.webp'>
+<img class='full border' src='finished-pretty-with-icon.webp' alt='Der gestaltete Timer zeigt 00:22.80 und darunter einen Button zum Zurücksetzen.'>
 
 Du kannst dir hier auch andere Icons aussuchen: [https://icon-sets.iconify.design/](https://icon-sets.iconify.design/). Du kannst die Icons ganz einfach in deine Webseite einfügen, indem du den Namen des Icons in den `<Icon>`-Tag einfügst. Zum Beispiel:
 
@@ -511,9 +525,17 @@ Um deine Webseite als statische Webseite zu exportieren, müssen wir erst einen 
 npm install -D @sveltejs/adapter-static
 ```
 
-Anschließend musst du den Adapter in der Datei `svelte.config.js` aktivieren. Öffne die Datei und ändere `adapter-auto` in `adapter-static`:
+Anschließend musst du den Adapter in der Datei `vite.config.js` aktivieren. Ändere dazu ganz oben die Zeile
 
-<img class='full' src='adapter-static.webp'>
+```js
+import adapter from '@sveltejs/adapter-auto';
+```
+
+in
+
+```js
+import adapter from '@sveltejs/adapter-static';
+```
 
 Wir müssen Svelte jetzt noch mitteilen, dass wir die Webseite als statische Webseite exportieren möchten. Erstelle dazu eine neue Datei `src/routes/+layout.js` und füge den folgenden Code ein:
 

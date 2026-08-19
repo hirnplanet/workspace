@@ -1,5 +1,6 @@
-FROM emscripten/emsdk
-RUN sudo apt-get update && sudo apt-get install -y \
-    rake jsbeautifier \
-    && sudo apt-get clean \
-    && sudo rm -rf /var/lib/apt/lists/*
+ARG EMSCRIPTEN_VERSION=6.0.6
+FROM emscripten/emsdk:${EMSCRIPTEN_VERSION}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ruby rake \
+    && rm -rf /var/lib/apt/lists/*
